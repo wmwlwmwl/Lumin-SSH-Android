@@ -1,0 +1,151 @@
+Lumin SSH Android Source License
+Version 1.1
+
+Copyright (c) 2026 Lumin SSH Android Authors
+
+重要提示 / IMPORTANT
+本文件不构成法律意见。若你计划大规模分发、上架应用商店或商业合作，
+请自行咨询具备资质的律师。第三方依赖组件仍受其各自许可证约束。
+This file is not legal advice. Third-party components remain under their own licenses.
+
+------------------------------------------------------------------------
+中文文本（与英文冲突时以中文为准）
+------------------------------------------------------------------------
+
+## 0. 定义
+
+0.1 「本软件」：指本代码仓库中由版权人原创或由其取得完整再许可权的源代码、
+    资源与文档，**不包括**第三方开源组件、系统库及你自行添加的无关代码。
+0.2 「衍生作品」：对本软件进行修改、翻译、改编、合并或基于其制作的作品中，
+    含有本软件受保护部分的部分。
+0.3 「商用」：以获取直接或间接经济利益为主要目的的使用，包括但不限于：
+    出售、收费授权、收费分发；将本软件作为付费产品/服务的核心功能提供；
+    在营利性外包或客户项目中交付本软件作为交付物；以本软件为主要功能并
+    通过广告、内购等方式营利的公开发布（个人学习、非营利教学、无收费
+    无广告的自用/公益展示除外）。
+0.4 「源码可得」：以通常技术人员可合理获取、阅读与再构建的方式提供与
+    所发布二进制**对应版本**的完整源代码（例如随包附带，或提供稳定、
+    免费、无需绕过付费墙的公开仓库/下载链接）。
+0.5 「混淆/加密发布」：对外提供本软件或衍生作品时，仅提供经加密、加壳、
+    或故意使源代码实质上不可读的形式，且未同时做到「源码可得」。
+
+## 1. 授权（在遵守本许可前提下）
+
+版权人授予你一项**有限、非独占、不可转让、可因违约终止**的许可，允许你：
+
+1.1 非商用目的下使用、运行、复制本软件；
+1.2 非商用目的下修改本软件并制作衍生作品（二开）；
+1.3 非商用目的下再发布本软件或衍生作品的源代码及二进制形式，
+    但必须满足第 3 条。
+
+未在本许可中明示授予的权利均由版权人保留。
+
+## 2. 限制
+
+未经版权人事先**书面**同意，你不得：
+
+2.1 将本软件或衍生作品用于第 0.3 条定义的商用；
+2.2 以第 0.5 条定义的混淆/加密发布方式对外分发本软件或衍生作品；
+2.3 删除、篡改本软件中的版权声明、本许可文本或合理署名；
+2.4 使用「Lumin」「Lumin SSH」等名称或标识，使人误认为你的衍生作品
+    为版权人官方版本或已获官方背书（事实描述「基于 Lumin SSH Android
+    修改」且不造成混淆的除外）。
+
+## 3. 再发布条件
+
+再发布本软件或衍生作品时，你必须同时：
+
+3.1 附带完整本许可文本；
+3.2 保留原版权与许可声明；
+3.3 确保「源码可得」（见 0.4）；
+3.4 若存在实质性修改，以合理方式说明修改要点；
+3.5 遵守所有第三方组件的许可证（见第 5 条），不得仅凭本许可削减第三方
+    许可证已授予第三方组件接受者的权利。
+
+## 4. 终止
+
+严重或持续违反本许可的，本授权自动终止。终止后你应停止对本软件受保护
+部分的使用与分发。依本许可已合法获得副本的善意下游接受者，在其自身未
+违约的范围内，其许可不因你的违约而自动消灭。
+
+## 5. 第三方组件
+
+本软件构建与运行可能依赖第三方开源软件（例如 AndroidX、Kotlin 标准库、
+Termux terminal 相关组件、OkHttp、JSch 等）。该等组件的版权与许可条款
+**优先适用其原许可证**。本许可仅约束第 0.1 条范围内的本软件原创部分，
+**无意、也无权**修改第三方许可证下的权利义务。你使用本软件时须自行确
+保对第三方组件的使用符合其许可证。
+
+## 6. 无担保与责任限制
+
+本软件按「现状（AS IS）」提供，不附带任何明示或默示担保，包括但不限于
+适销性、特定用途适用性、权利无瑕疵或不侵权。在适用法律允许的最大范围
+内，作者及版权人对因使用或无法使用本软件引起的任何直接、间接、附带、
+特殊、后果性或惩罚性损害不承担责任，无论基于合同、侵权或其他法理。
+
+部分法域不允许排除默示担保或限制责任，此时上述条款在该法域仅在法律允
+许的范围内适用。
+
+## 7. 可分割性
+
+若本许可某一条款被有权机关认定为无效或不可执行，其余条款继续有效；无
+效部分应在最大限度内调整为最接近原意且合法的条款。
+
+## 8. 完整协议与变更
+
+本许可构成关于本软件使用许可的完整约定（另有书面协议的除外）。版权人
+可对后续版本软件采用不同许可；你已获得的副本仍受你获取该副本时随附许
+可约束，除非你另行同意。
+
+## 9. 管辖
+
+本许可适用中华人民共和国大陆地区法律（不含冲突规范）。因本许可引起的
+争议，由版权人住所地有管辖权的人民法院管辖（法律另有强制规定的除外）。
+
+使用、复制、修改或分发本软件，即视为你已阅读并同意受本许可约束。
+若不同意，请勿使用本软件。
+
+------------------------------------------------------------------------
+English (reference translation; Chinese text controls on conflict)
+------------------------------------------------------------------------
+
+Copyright (c) 2026 Lumin SSH Android Authors
+
+### 0. Definitions (summary)
+“Software” means original code/resources/docs in this repository under the
+authors’ copyright, excluding third-party components. “Commercial use”
+means use primarily for direct or indirect economic gain (sale, paid
+distribution, commercial embedding, for-profit services, ad-monetized apps
+whose primary function is this Software, etc.). “Source-available” means
+providing complete corresponding source in a way a skilled person can
+reasonably obtain and rebuild. “Encrypted/obfuscated distribution” means
+publishing only encrypted, packed, or deliberately unreadable forms without
+also making source available.
+
+### 1. Grant
+Subject to this License: non-commercial use, copying, modification, and
+redistribution of the Software and derivatives, with a limited,
+non-exclusive, non-transferable, terminable license. All other rights reserved.
+
+### 2. Restrictions
+Without prior written consent: no commercial use; no encrypted/obfuscated
+distribution without source-available compliance; no removal of notices;
+no trademark/endorsement confusion regarding “Lumin” / “Lumin SSH”.
+
+### 3. Redistribution
+Must include this License, preserve notices, keep source available, describe
+material changes, and comply with third-party licenses.
+
+### 4. Termination
+Material breach terminates your rights. Downstream recipients who received
+copies lawfully and are not themselves in breach are not automatically cut off.
+
+### 5. Third parties
+Third-party OSS remains under its own licenses. This License does not alter
+those terms and applies only to the authors’ original Software.
+
+### 6. Disclaimer
+AS IS, no warranties. Liability limited to the maximum extent permitted by law.
+
+### 7–9. Severability, entire agreement, governing law of mainland PRC;
+Chinese text controls. Use constitutes acceptance.

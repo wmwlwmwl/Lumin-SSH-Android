@@ -1,0 +1,50 @@
+# Gradle
+.gradle/
+build/
+app/build/
+**/build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.fleet/
+*.hprof
+
+# Kotlin
+.kotlin/
+
+# Local / secrets
+local.properties
+key.properties
+keystore/key.properties
+keystore/*.jks
+keystore/*.keystore
+!keystore/key.properties.example
+*.jks
+*.keystore
+*.pem
+.env
+.env.*
+secrets/
+google-services.json
+
+# Logs & OS
+*.log
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Captures / build outputs (if placed under the repo)
+*.apk
+*.aab
+*.ap_
+captures/
+output/
+out/
+
+# Misc
+*.swp
+*~
+.cxx/
+.externalNativeBuild/

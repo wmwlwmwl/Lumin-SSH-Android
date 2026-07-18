@@ -1,0 +1,27 @@
+# Android 签名配置（本文件不要提交到 Git）
+#
+# 1. 生成密钥库（只需做一次，请妥善备份 .jks！）
+#
+# Windows (PowerShell) 在 android 目录：
+#   mkdir keystore -Force
+#   keytool -genkeypair -v `
+#     -keystore keystore/lumin-release.jks `
+#     -keyalg RSA -keysize 2048 -validity 10000 `
+#     -alias lumin `
+#     -storepass 你的仓库密码 `
+#     -keypass 你的密钥密码 `
+#     -dname "CN=Lumin SSH, OU=Android, O=Lumin, L=Unknown, ST=Unknown, C=CN"
+#
+# 2. 填写本文件（路径相对 android 工程根目录）：
+
+storeFile=keystore/lumin-release.jks
+storePassword=改成你的仓库密码
+keyAlias=lumin
+keyPassword=改成你的密钥密码
+
+# 3. 本地打签名包：
+#   .\gradlew.bat :app:assembleRelease
+#   产物：app/build/outputs/apk/release/app-release.apk
+#
+# 4. GitHub Actions 签名：见 docs 或 VERSIONING.md「签名」一节
+#    把 jks 做 base64 放进 Secrets，不要把本文件或 jks 推上仓库。
