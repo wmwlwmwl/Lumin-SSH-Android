@@ -28,6 +28,8 @@ class RecoveryPasswordResetRequiredException(message: String = "旧密码和新�
 
 fun sha256(input: String): ByteArray = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
 
+// 与 PC 一致：20060102_150405.000_-0700 → 本地时区如 ...013_+0800
+// WebDAV 路径里的 + 由 encodeWebDavSegment 编成 %2B，列表解码用 decodeWebDavFileName 保留 +。
 fun backupTimestamp(): String = SimpleDateFormat("yyyyMMdd_HHmmss.SSS_Z", Locale.US).apply {
     timeZone = TimeZone.getDefault()
 }.format(Date())

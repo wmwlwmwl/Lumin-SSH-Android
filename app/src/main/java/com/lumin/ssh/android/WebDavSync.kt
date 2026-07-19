@@ -1,21 +1,59 @@
 package com.lumin.ssh.android
 
 import okhttp3.Credentials
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.MediaType.Companion.toMediaType
 import org.w3c.dom.Element
-import java.net.URLDecoder
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
 import javax.xml.parsers.DocumentBuilderFactory
 
 internal fun normalizeWebDavUrl(value: String): String {
     val trimmed = value.trim()
     return if (trimmed.startsWith("http://", true) || trimmed.startsWith("https://", true)) trimmed else "https://$trimmed"
+}
+
+/**
+ * 从 PROPFIND href 得到文件名。
+ * 禁止对整段使用 URLDecoder.decode：它会把 + 解成空格，导致 +0800 变成 " 0800"，同步读文件 404。
+ */
+internal fun webDavHrefFileName(href: String): String {
+    var s = href.trim()
+    if (s.isEmpty()) return ""
+    s = s.substringBefore('#')
+    s = s.substringBefore('?')
+    val isCollection = s.endsWith('/')
+    if (s.startsWith("http://", ignoreCase = true) || s.startsWith("https://", ignoreCase = true)) {
+        val afterScheme = s.substringAfter("://")
+        s = afterScheme.substringAfter('/', missingDelimiterValue = "")
+        s = "/$s"
+    }
+    if (isCollection || s.endsWith('/')) return ""
+    s = s.trimEnd('/')
+    if (s.isEmpty()) return ""
+    val last = s.substringAfterLast('/', missingDelimiterValue = s)
+    return decodeWebDavFileName(last)
+}
+
+/** 只解码 %XX；字面 + 保持为 +（时区 +0800）。 */
+internal fun decodeWebDavFileName(raw: String): String {
+    val sb = StringBuilder(raw.length)
+    var i = 0
+    while (i < raw.length) {
+        val c = raw[i]
+        if (c == '%' && i + 2 < raw.length) {
+            val hex = raw.substring(i + 1, i + 3)
+            val code = hex.toIntOrNull(16)
+            if (code != null) {
+                sb.append(code.toChar())
+                i += 3
+                continue
+            }
+        }
+        sb.append(c)
+        i++
+    }
+    return sb.toString().trim()
 }
 
 class WebDavSync(
@@ -77,32 +115,57 @@ class WebDavSync(
     }
 
     override fun listBackupNames(): List<String> {
-        val body = "".toRequestBody(null)
-        val request = Request.Builder()
-            .url(joinUrl(url, normalizedRemotePath))
+        val target = joinUrl(url, normalizedRemotePath)
+        val withBody = runCatching { propfindBody(target, true) }.getOrDefault("")
+        var names = parseBackupNames(withBody)
+        if (names.isEmpty()) {
+            val emptyBody = propfindBody(target, false)
+            names = parseBackupNames(emptyBody)
+        }
+        return names
+    }
+
+    private fun propfindBody(target: String, withXmlBody: Boolean): String {
+        val body = if (withXmlBody) {
+            ("<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
+                "<d:propfind xmlns:d=\"DAV:\"><d:prop><d:displayname/><d:resourcetype/></d:prop></d:propfind>")
+                .toRequestBody("text/xml; charset=utf-8".toMediaType())
+        } else {
+            "".toRequestBody(null)
+        }
+        val builder = Request.Builder()
+            .url(target)
             .header("Authorization", auth)
             .header("Depth", "1")
             .method("PROPFIND", body)
-            .build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IllegalStateException("WebDAV 列表失败: HTTP ${response.code}")
-            val xml = response.body?.string().orEmpty()
-            val factory = DocumentBuilderFactory.newInstance().apply {
-                runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
-                runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
-                runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
-                isExpandEntityReferences = false
+        if (withXmlBody) builder.header("Content-Type", "text/xml; charset=utf-8")
+        client.newCall(builder.build()).execute().use { response ->
+            if (!response.isSuccessful && response.code != 207) {
+                throw IllegalStateException("WebDAV 列表失败: HTTP ${response.code}")
             }
-            val doc = factory.newDocumentBuilder().parse(xml.byteInputStream())
-            val hrefs = doc.getElementsByTagNameNS("*", "href")
-            val names = mutableListOf<String>()
-            for (i in 0 until hrefs.length) {
-                val href = (hrefs.item(i) as Element).textContent
-                val decoded = URLDecoder.decode(href.substringAfterLast('/'), "UTF-8")
-                if (isBackupName(decoded)) names += decoded
-            }
-            return names
+            return response.body?.string().orEmpty()
         }
+    }
+
+    private fun parseBackupNames(xml: String): List<String> {
+        if (xml.isBlank()) return emptyList()
+        val factory = DocumentBuilderFactory.newInstance().apply {
+            runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
+            runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
+            runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
+            isExpandEntityReferences = false
+            isNamespaceAware = true
+        }
+        val doc = runCatching { factory.newDocumentBuilder().parse(xml.byteInputStream()) }.getOrElse { return emptyList() }
+        val hrefs = doc.getElementsByTagNameNS("*", "href")
+        val names = linkedSetOf<String>()
+        for (i in 0 until hrefs.length) {
+            val href = (hrefs.item(i) as Element).textContent.orEmpty()
+            // webDavHrefFileName 内部已 decodeWebDavFileName，勿再 URLDecoder（会把 + 变空格）
+            val decoded = webDavHrefFileName(href)
+            if (isBackupName(decoded)) names += decoded
+        }
+        return names.sortedDescending()
     }
 
     private fun readText(path: String): String {
@@ -145,6 +208,30 @@ class WebDavSync(
         }
     }
 
-    private fun joinUrl(base: String, path: String) = base.trimEnd('/') + "/" + path.trimStart('/')
+    private fun joinUrl(base: String, path: String): String {
+        val keepSlash = path.endsWith('/')
+        val parts = path.trim('/').split('/').filter { it.isNotEmpty() }
+        val encoded = parts.joinToString("/") { encodeWebDavSegment(it) }
+        val suffix = when {
+            encoded.isEmpty() && keepSlash -> "/"
+            encoded.isEmpty() -> ""
+            keepSlash -> "/$encoded/"
+            else -> "/$encoded"
+        }
+        return base.trimEnd('/') + suffix
+    }
+
     private fun joinPath(dir: String, name: String) = dir.trimEnd('/') + "/" + name
+}
+
+/** 文件名里的 +0800 等：+ 必须编成 %2B，不能当空格。 */
+internal fun encodeWebDavSegment(segment: String): String {
+    val sb = StringBuilder(segment.length + 8)
+    for (ch in segment) {
+        when {
+            ch.isLetterOrDigit() || ch == '-' || ch == '.' || ch == '_' || ch == '~' -> sb.append(ch)
+            else -> sb.append('%').append(ch.code.toString(16).uppercase().padStart(2, '0'))
+        }
+    }
+    return sb.toString()
 }

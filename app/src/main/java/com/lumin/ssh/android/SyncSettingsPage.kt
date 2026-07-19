@@ -542,7 +542,9 @@ fun SyncSettingsPage(
 
 @Composable
 fun WebDavConfigCard(store: LocalStore, editing: Boolean, onEditingChange: (Boolean) -> Unit, onMessage: (String) -> Unit) {
-    val cfg = store.loadWebDavConfig()
+    // 保存后需触发重组，否则 configured 仍按旧快照判断，表单不会收起
+    var revision by remember { mutableStateOf(0) }
+    val cfg = remember(revision) { store.loadWebDavConfig() }
     val configured = cfg.url.isNotBlank() && cfg.username.isNotBlank()
 
     var url by remember(cfg) { mutableStateOf(cfg.url) }
@@ -583,6 +585,7 @@ fun WebDavConfigCard(store: LocalStore, editing: Boolean, onEditingChange: (Bool
                     LuminPrimaryButton(enabled = !testing && !saving, onClick = {
                         saving = true
                         store.saveWebDavConfig(WebDavConfig(url, username, password, remotePath, maxBackups.toIntOrNull() ?: 0))
+                        revision++
                         onEditingChange(false)
                         onMessage(context.getString(R.string.webdav_config_saved))
                         saving = false
@@ -598,7 +601,8 @@ fun WebDavConfigCard(store: LocalStore, editing: Boolean, onEditingChange: (Bool
 
 @Composable
 fun R2ConfigCard(store: LocalStore, editing: Boolean, onEditingChange: (Boolean) -> Unit, onMessage: (String) -> Unit) {
-    val cfg = store.loadR2Config()
+    var revision by remember { mutableStateOf(0) }
+    val cfg = remember(revision) { store.loadR2Config() }
     val configured = cfg.accessKeyId.isNotBlank() && cfg.secretAccessKey.isNotBlank() && cfg.bucket.isNotBlank() && cfg.endpoint.isNotBlank()
 
     var accessKeyId by remember(cfg) { mutableStateOf(cfg.accessKeyId) }
@@ -643,6 +647,7 @@ fun R2ConfigCard(store: LocalStore, editing: Boolean, onEditingChange: (Boolean)
                     LuminPrimaryButton(enabled = !testing && !saving, onClick = {
                         saving = true
                         store.saveR2Config(R2Config(accessKeyId, secretAccessKey, bucket, endpoint, region, prefix, maxBackups.toIntOrNull() ?: 0))
+                        revision++
                         onEditingChange(false)
                         onMessage(context.getString(R.string.r2_config_saved))
                         saving = false
@@ -693,20 +698,23 @@ fun HostPortConfigCard(
     var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val configured = initialHost.isNotBlank() && initialUsername.isNotBlank()
+    // 首次保存后 initial* 仍是旧入参，需本地维护 configured，否则表单不会收起
+    var configured by remember {
+        mutableStateOf(initialHost.isNotBlank() && initialUsername.isNotBlank())
+    }
 
     LuminCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
 
             if (configured && !editing) {
-                Text(stringResource(R.string.host_label, initialHost), style = MaterialTheme.typography.bodySmall, color = LuminColors.Accent)
-                Text(stringResource(R.string.user_label, initialUsername), style = MaterialTheme.typography.bodySmall, color = LuminColors.Accent)
-                Text(stringResource(R.string.directory_label, initialRemoteDir), style = MaterialTheme.typography.bodySmall, color = LuminColors.Accent)
+                Text(stringResource(R.string.host_label, host), style = MaterialTheme.typography.bodySmall, color = LuminColors.Accent)
+                Text(stringResource(R.string.user_label, username), style = MaterialTheme.typography.bodySmall, color = LuminColors.Accent)
+                Text(stringResource(R.string.directory_label, remoteDir), style = MaterialTheme.typography.bodySmall, color = LuminColors.Accent)
                 if (supportsFtpMode) {
-                    Text(stringResource(R.string.mode_label, if (initialFtpMode == FTP_MODE_PLAIN) stringResource(R.string.plain_ftp_unsafe) else stringResource(R.string.explicit_ftps_recommended)), style = MaterialTheme.typography.bodySmall, color = if (initialFtpMode == FTP_MODE_PLAIN) LuminColors.Danger else LuminColors.Accent)
+                    Text(stringResource(R.string.mode_label, if (ftpMode == FTP_MODE_PLAIN) stringResource(R.string.plain_ftp_unsafe) else stringResource(R.string.explicit_ftps_recommended)), style = MaterialTheme.typography.bodySmall, color = if (ftpMode == FTP_MODE_PLAIN) LuminColors.Danger else LuminColors.Accent)
                 }
-                if (supportsKeyAuth && initialPrivateKey.isNotBlank()) {
+                if (supportsKeyAuth && privateKey.isNotBlank()) {
                     Text(stringResource(R.string.auth_key_label), style = MaterialTheme.typography.bodySmall, color = LuminColors.Accent)
                 }
                 LuminPrimaryButton(onClick = { editing = true }){ Text(stringResource(R.string.change_config)) }
@@ -754,6 +762,7 @@ fun HostPortConfigCard(
                         runCatching {
                             onSave(host, port.toIntOrNull() ?: defaultPort, username, if (useKeyAuth) "" else password, remoteDir, maxBackups.toIntOrNull() ?: 0, if (useKeyAuth) privateKey else "", if (useKeyAuth) passphrase else "", ftpMode)
                         }.onSuccess {
+                            configured = host.isNotBlank() && username.isNotBlank()
                             editing = false
                             onMessage(context.getString(R.string.config_saved, title))
                         }.onFailure { onMessage(context.getString(R.string.config_save_failed, title, context.userErrorText(it))) }
