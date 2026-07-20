@@ -53,6 +53,8 @@ class TermuxTerminalSurface(context: Context) : View(context) {
     private var copyScreenStep = 0
     private var selectionStart: Pair<Int, Int>? = null
     private var selectionEnd: Pair<Int, Int>? = null
+    /** 选择文本对话框打开时：冻结自动滚到底，且对话框只用打开瞬间的快照 */
+    private var selectTextDialogOpen = false
     private val pending = ArrayList<ByteArray>()
     private val tapSlopPx = 24f * resources.displayMetrics.density
     // Defaults match LuminDarkPalette terminal tokens until setSurfaceColors() runs.
@@ -118,7 +120,10 @@ class TermuxTerminalSurface(context: Context) : View(context) {
             return
         }
         current.append(data, data.size)
-        topRow = 0
+        // 选文本对话框打开时不要强制滚到最新，避免用户在对话框里滑不动
+        if (!selectTextDialogOpen) {
+            topRow = 0
+        }
         postInvalidate()
     }
 
@@ -320,26 +325,117 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         onSaveTranscript(fileName, text)
     }
 
+    /**
+     * 复制整个会话：打开瞬间快照；高度严格贴文字（无底部大白）；打开时在最新。
+     */
     private fun showCopyWholeSessionDialog(clipboard: ClipboardManager?) {
+        val snapshot = emulator?.screen?.getTranscriptText().orEmpty()
+        selectTextDialogOpen = true
+
+        val density = resources.displayMetrics.density.coerceAtLeast(1f)
+        val screenH = resources.displayMetrics.heightPixels
+        val screenW = resources.displayMetrics.widthPixels
+        val padH = (8 * density).toInt()
+        val padV = (6 * density).toInt()
+        // 上限才封顶；短内容绝不用下限撑出空白
+        val contentMax = (screenH * 0.55f).toInt()
+
         val editText = EditText(context).apply {
-            setText(emulator?.screen?.getTranscriptText().orEmpty())
+            setText(snapshot)
             setSelectAllOnFocus(false)
             setTextIsSelectable(true)
-            minLines = 6
-            maxLines = 10
+            typeface = Typeface.MONOSPACE
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, textSizePx.toFloat())
+            setTextColor(defaultForegroundColor)
+            // 透明底：避免文字短时出现大块着色空白
+            setBackgroundColor(Color.TRANSPARENT)
+            setPadding(padH, padV, padH, padV)
+            isVerticalScrollBarEnabled = false
+            minLines = 1
+            maxLines = Integer.MAX_VALUE
+            // 禁止 EditText 自带 minHeight 撑空
+            minimumHeight = 0
+            setMinHeight(0)
+            includeFontPadding = false
+            setHorizontallyScrolling(false)
+            val end = text?.length ?: 0
+            if (end > 0) setSelection(end)
         }
-        AlertDialog.Builder(context)
+
+        val scroll = android.widget.ScrollView(context).apply {
+            isFillViewport = false
+            isVerticalScrollBarEnabled = true
+            overScrollMode = android.view.View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            // 去掉 ScrollView 默认额外边距
+            clipToPadding = true
+            setPadding(0, 0, 0, 0)
+            addView(
+                editText,
+                android.widget.FrameLayout.LayoutParams(
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+
+        val container = android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding((4 * density).toInt(), 0, (4 * density).toInt(), 0)
+            addView(
+                scroll,
+                android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+
+        val dialog = AlertDialog.Builder(context)
             .setTitle(context.getString(R.string.select_text))
-            .setView(editText)
+            .setView(container)
             .setNegativeButton(context.getString(R.string.cancel), null)
             .setPositiveButton(context.getString(R.string.copy)) { _, _ ->
                 val selected = editText.selectionStart.takeIf { it >= 0 }?.let { start ->
                     val end = editText.selectionEnd
                     if (end > start) editText.text.substring(start, end) else null
                 }
-                clipboard?.setPrimaryClip(ClipData.newPlainText("terminal", selected ?: editText.text.toString()))
+                clipboard?.setPrimaryClip(
+                    ClipData.newPlainText("terminal", selected ?: editText.text.toString()),
+                )
             }
-            .show()
+            .create()
+
+        dialog.setOnDismissListener { selectTextDialogOpen = false }
+
+        dialog.show()
+        dialog.window?.setLayout(
+            (screenW * 0.92f).toInt().coerceAtMost(screenW - (24 * density).toInt()),
+            android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+        )
+
+        var scrolledToEndOnce = false
+        fun fitHeightOnce() {
+            val width = scroll.width.takeIf { it > 0 } ?: (screenW * 0.92f).toInt()
+            val textW = (width - padH * 2).coerceAtLeast(1)
+            editText.measure(
+                android.view.View.MeasureSpec.makeMeasureSpec(textW, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED),
+            )
+            // 严格贴文字高度；仅当超出上限才封顶可滚；无人为 min 撑空白
+            val needed = editText.measuredHeight.coerceAtMost(contentMax).coerceAtLeast(1)
+            val lp = scroll.layoutParams
+            if (lp.height != needed) {
+                lp.height = needed
+                scroll.layoutParams = lp
+            }
+            if (!scrolledToEndOnce) {
+                scrolledToEndOnce = true
+                scroll.post { scroll.fullScroll(android.view.View.FOCUS_DOWN) }
+            }
+        }
+
+        scroll.post { fitHeightOnce() }
+        scroll.postDelayed({ fitHeightOnce() }, 48)
     }
 
     private fun shareTranscript() {
@@ -387,29 +483,65 @@ class TermuxTerminalSurface(context: Context) : View(context) {
 
     /** 短按点在链接上：弹出复制 / 打开；否则 false 走原 onTap（调键盘）。 */
     private fun handleLinkTap(event: MotionEvent): Boolean {
-        val current = emulator ?: return false
+        val current = emulator ?: run {
+            AppLog.d("Link", "tap miss: no emulator")
+            return false
+        }
         val screen = current.screen
         val (column, row) = positionFromTouch(event)
-        if (row >= inputStartRow(current)) return false
+        val inputStart = inputStartRow(current)
+        if (row >= inputStart) {
+            AppLog.d("Link", "tap miss: input row col=$column row=$row inputStart=$inputStart")
+            return false
+        }
         val cols = current.mColumns
         // 逻辑行拼接，换行 URL 也能命中完整地址
         val minRow = -screen.activeTranscriptRows
         val maxRow = current.mRows - 1
         val parts = logicalParts(screen, cols, row, minRow, maxRow)
         val spans = findTerminalUrlSpans(parts.joined)
-        if (spans.isEmpty()) return false
+        if (spans.isEmpty()) {
+            AppLog.d("Link", "tap miss: no spans col=$column row=$row joinedLen=${parts.joined.length}")
+            return false
+        }
         // 点击列映射到 joined 下标
         var offset = 0
         var joinedCol = -1
         parts.texts.forEachIndexed { idx, text ->
             val phys = parts.startRow + idx
             if (phys == row) {
-                joinedCol = offset + column.coerceIn(0, text.length.coerceAtLeast(1) - 1)
+                joinedCol = offset + column.coerceIn(0, (text.length - 1).coerceAtLeast(0))
             }
             offset += text.length
         }
-        if (joinedCol < 0) return false
-        val hit = spans.firstOrNull { joinedCol in it.start until it.end } ?: return false
+        if (joinedCol < 0) {
+            AppLog.d("Link", "tap miss: col map failed col=$column row=$row")
+            return false
+        }
+        // 放宽命中：精确列 + 左右各 2 列容差（高亮看起来宽，实际列易偏）
+        val hit = spans.firstOrNull { joinedCol in it.start until it.end }
+            ?: spans.minByOrNull { span ->
+                when {
+                    joinedCol < span.start -> span.start - joinedCol
+                    joinedCol >= span.end -> joinedCol - (span.end - 1)
+                    else -> 0
+                }
+            }?.takeIf { span ->
+                val dist = when {
+                    joinedCol < span.start -> span.start - joinedCol
+                    joinedCol >= span.end -> joinedCol - (span.end - 1)
+                    else -> 0
+                }
+                dist <= 2
+            }
+        if (hit == null) {
+            AppLog.d(
+                "Link",
+                "tap miss: near miss col=$column row=$row joinedCol=$joinedCol spans=${spans.joinToString { "${it.start}-${it.end}" }}",
+            )
+            return false
+        }
+        AppLog.i("Link", "tap hit url=${hit.url} col=$column row=$row joinedCol=$joinedCol")
         showLinkActionDialog(hit.url)
         return true
     }
@@ -484,12 +616,15 @@ class TermuxTerminalSurface(context: Context) : View(context) {
                     return true
                 }
                 val longPress = System.currentTimeMillis() - downAt > 500
-                val moved = hypot(event.x - downX, event.y - downY) > tapSlopPx
+                // 链接命中放宽移动阈值（手指难绝对静止）
+                val linkSlop = tapSlopPx * 1.6f
+                val movedFar = hypot(event.x - downX, event.y - downY) > linkSlop
+                val movedTap = hypot(event.x - downX, event.y - downY) > tapSlopPx
                 if (longPress) {
                     performLongClick()
-                } else if (!moved && handleLinkTap(event)) {
+                } else if (!movedFar && handleLinkTap(event)) {
                     // 点到链接：已弹窗
-                } else {
+                } else if (!movedTap) {
                     onTap()
                 }
                 return true

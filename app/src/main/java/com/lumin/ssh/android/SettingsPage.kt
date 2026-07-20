@@ -10,8 +10,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -21,6 +27,9 @@ fun SettingsPage(
     appLanguage: String,
     appTheme: String,
     terminalFontSize: Int,
+    appLogEnabled: Boolean,
+    appLogSizeLabel: String,
+    appLogMaxLabel: String,
     onBack: () -> Unit,
     onAppLanguageChange: (String) -> Unit,
     onAppThemeChange: (String) -> Unit,
@@ -31,7 +40,12 @@ fun SettingsPage(
     onOpenDataManagement: () -> Unit,
     onOpenSyncSettings: () -> Unit,
     onOpenAbout: () -> Unit,
+    onAppLogEnabledChange: (Boolean) -> Unit = {},
+    onShareAppLog: () -> Unit = {},
+    onClearAppLog: () -> Unit = {},
 ) {
+    var logEnabled by remember(appLogEnabled) { mutableStateOf(appLogEnabled) }
+    var logSize by remember(appLogSizeLabel) { mutableStateOf(appLogSizeLabel) }
     Column(
         Modifier
             .fillMaxSize()
@@ -123,6 +137,62 @@ fun SettingsPage(
         LuminSettingsRow(
             title = stringResource(R.string.sync_and_cloud),
             onClick = onOpenSyncSettings,
+        )
+
+        LuminSectionTitle(stringResource(R.string.diagnostics_section))
+        LuminCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            stringResource(R.string.app_log_enabled),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = LuminColors.TextPrimary,
+                        )
+                        Text(
+                            stringResource(R.string.app_log_enabled_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = LuminColors.TextMuted,
+                        )
+                    }
+                    Switch(
+                        checked = logEnabled,
+                        onCheckedChange = {
+                            logEnabled = it
+                            onAppLogEnabledChange(it)
+                        },
+                    )
+                }
+                Text(
+                    stringResource(R.string.app_log_size, logSize, appLogMaxLabel),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LuminColors.TextSecondary,
+                )
+                Text(
+                    stringResource(R.string.app_log_rotate_hint, appLogMaxLabel),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LuminColors.TextMuted,
+                )
+            }
+        }
+        LuminSettingsRow(
+            title = stringResource(R.string.share_app_log),
+            subtitle = stringResource(R.string.share_app_log_hint),
+            onClick = {
+                onShareAppLog()
+                logSize = AppLog.sizeLabel()
+            },
+        )
+        LuminSettingsRow(
+            title = stringResource(R.string.clear_app_log),
+            onClick = {
+                onClearAppLog()
+                logSize = AppLog.sizeLabel()
+            },
         )
 
         LuminSectionTitle(stringResource(R.string.about_title))

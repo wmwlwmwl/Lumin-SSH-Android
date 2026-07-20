@@ -56,11 +56,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val store = LocalStore(this)
+        AppLog.init(this, loggingEnabled = store.loadAppLogEnabled())
+        AppLog.i("Main", "onCreate sdk=${Build.VERSION.SDK_INT} log=${store.loadAppLogEnabled()}")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 10)
         }
         requestedSessionIdState.value = intent?.getStringExtra(SshBackgroundService.EXTRA_SESSION_ID)
-        val store = LocalStore(this)
         val runStartupSync = !intent.getBooleanExtra(SKIP_STARTUP_SYNC, false)
         intent.removeExtra(SKIP_STARTUP_SYNC)
         setContent {

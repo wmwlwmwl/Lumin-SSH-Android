@@ -1,5 +1,6 @@
 package com.lumin.ssh.android
 
+import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -330,6 +331,9 @@ fun LuminLiteApp(
             appLanguage = appLanguage,
             appTheme = appTheme,
             terminalFontSize = terminalFontSize,
+            appLogEnabled = store.loadAppLogEnabled(),
+            appLogSizeLabel = AppLog.sizeLabel(),
+            appLogMaxLabel = AppLog.maxSizeLabel(),
             onBack = { navigateHome() },
             onAppLanguageChange = onAppLanguageChange,
             onAppThemeChange = onAppThemeChange,
@@ -343,6 +347,27 @@ fun LuminLiteApp(
             onOpenDataManagement = { showDataManagement = true },
             onOpenSyncSettings = { navigateTo(AppScreen.SyncSettings) },
             onOpenAbout = { navigateTo(AppScreen.About) },
+            onAppLogEnabledChange = { on ->
+                store.saveAppLogEnabled(on)
+                AppLog.setEnabled(on)
+                message = if (on) {
+                    context.getString(R.string.app_log_enabled_on)
+                } else {
+                    context.getString(R.string.app_log_enabled_off)
+                }
+            },
+            onShareAppLog = {
+                val intent = AppLog.shareIntent(context)
+                if (intent != null) {
+                    context.startActivity(Intent.createChooser(intent, context.getString(R.string.share_app_log)))
+                } else {
+                    message = context.getString(R.string.app_log_empty)
+                }
+            },
+            onClearAppLog = {
+                AppLog.clear()
+                message = context.getString(R.string.app_log_cleared)
+            },
         )
     }
 

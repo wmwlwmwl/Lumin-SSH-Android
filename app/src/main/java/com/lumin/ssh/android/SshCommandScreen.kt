@@ -111,9 +111,10 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
 
     var showShortcutBar by remember { mutableStateOf(true) }
     var keyboardOpenedByTerminal by remember { mutableStateOf(false) }
-    var ptySized by remember { mutableStateOf(false) }
     var pendingColumns by remember { mutableStateOf(0) }
     var pendingRows by remember { mutableStateOf(0) }
+    var lastLoggedLocalCols by remember { mutableStateOf(0) }
+    var lastLoggedLocalRows by remember { mutableStateOf(0) }
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
@@ -316,30 +317,32 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
         focusRequester.requestFocus()
         keyboard?.show()
     }
-    val resizePtyOnce = { columns: Int, rows: Int ->
-        pendingColumns = columns
-        pendingRows = rows
-        val currentShell = shell
-        if (!ptySized && shellReady && currentShell != null) {
-            ptySized = true
-            currentShell.resize(columns, rows)
+    /** 只记本地尺寸；不远程 WINCH（见 SshShellSession.resize）。 */
+    fun resizePtyOnce(columns: Int, rows: Int) {
+        if (columns < 20 || rows < 5) return
+        val safeCols = columns.coerceIn(20, 120)
+        val safeRows = rows.coerceIn(5, 48)
+        pendingColumns = safeCols
+        pendingRows = safeRows
+        if (safeCols != lastLoggedLocalCols || safeRows != lastLoggedLocalRows) {
+            lastLoggedLocalCols = safeCols
+            lastLoggedLocalRows = safeRows
+            AppLog.d("Term", "local size ${safeCols}x$safeRows (no remote WINCH)")
         }
     }
-    fun sendToShell(payload: String, requireShell: Boolean = false) {
+    fun sendToShell(payload: String) {
         if (payload.isEmpty()) return
-        val currentShell = shell
-        if (currentShell == null) {
-            if (requireShell) {
-                terminal?.append(context.getString(R.string.local_shell_not_ready).toByteArray())
-            }
+        val currentShell = stateRef.shell ?: shell
+        if (currentShell == null || !shellReady) {
+            AppLog.w("Term", "send blocked shell=${currentShell != null} ready=$shellReady len=${payload.length}")
             return
         }
+        // 不打完整 payload（可能含密码）
+        AppLog.d("Term", "send len=${payload.length} first=${payload.firstOrNull()?.code}")
         scope.launch {
             runCatching { currentShell.sendRaw(payload) }
                 .onFailure {
-                    terminal?.append(
-                        context.getString(R.string.local_send_failed, context.userErrorText(it)).toByteArray(),
-                    )
+                    AppLog.e("Term", "send failed ready=$shellReady connected=${currentShell.isConnected}", it)
                 }
         }
     }
@@ -348,7 +351,11 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
         val line = command
         if (line.isNotBlank()) {
             command = ""
-            sendToShell("$line\r", requireShell = true)
+            // 多行脚本：换行统一成 \r（PTY），末尾再补一个回车执行
+            val payload = line.replace("\r\n", "\n").replace('\n', '\r').let { body ->
+                if (body.endsWith("\r")) body else "$body\r"
+            }
+            sendToShell(payload)
         }
     }
 
@@ -372,12 +379,9 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
     }
 
     fun sendQuickCommand(item: QuickCommand, filledCommand: String = item.command) {
-        if (shell == null) {
-            terminal?.append(context.getString(R.string.local_shell_not_ready).toByteArray())
-            return
-        }
+        if (!shellReady || shell == null) return
         showQuickCommands = false
-        sendToShell(if (item.addCR) "$filledCommand\r" else filledCommand, requireShell = true)
+        sendToShell(if (item.addCR) "$filledCommand\r" else filledCommand)
     }
 
     DisposableEffect(conn.id) {
@@ -401,84 +405,147 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
         }
     }
 
-    LaunchedEffect(conn.id, terminal != null, retryNonce) {
-        if (terminal == null || shell != null || connecting) return@LaunchedEffect
+    // 只跟 conn/retry 绑定，不要依赖 terminal（重组会取消 LaunchedEffect，导致已连上却 shellReady=false）
+    LaunchedEffect(conn.id, retryNonce) {
+        AppLog.d(
+            "Term",
+            "connect effect conn=${conn.id} term=${terminal != null} shell=${shell != null} ready=$shellReady connecting=$connecting retry=$retryNonce",
+        )
+        if (shellReady || connecting) return@LaunchedEffect
+        if (shell != null && shell!!.isConnected) {
+            shellReady = true
+            AppLog.i("Term", "reuse already-connected shell")
+            return@LaunchedEffect
+        }
+
         val backgroundEntry = requestedSessionId?.let { BackgroundSshSessions.take(it) }
         if (backgroundEntry != null) {
+            AppLog.i("Term", "restore background session=${backgroundEntry.sessionId}")
             restoredBackgroundSessionId = backgroundEntry.sessionId
             SshBackgroundService.release(context, backgroundEntry.sessionId)
             outputHistory.clear()
             backgroundEntry.transcript.forEach { bytes ->
                 addOutput(bytes)
-                terminal?.append(bytes)
+                (stateRef.terminal ?: terminal)?.append(bytes)
             }
             backgroundEntry.shell.setOnOutput { bytes, _ ->
-                terminal?.post {
+                val view = stateRef.terminal ?: terminal
+                view?.post {
                     addOutput(bytes)
-                    terminal?.append(bytes)
+                    view.append(bytes)
                 }
             }
             shell = backgroundEntry.shell
+            stateRef.shell = backgroundEntry.shell
             shellReady = true
             return@LaunchedEffect
         }
+
         connecting = true
+        shellReady = false
+        AppLog.i("Term", "connecting ${sshConn.username}@${sshConn.host}:${sshConn.port}")
+        // 实时输出：只 append 到「当时」的 terminal，并给该 view 打标记，避免 history 再刷双份
         val nextShell = SshShellSession(
             store = store,
             conn = sshConn,
             onOutput = { bytes, _ ->
-                terminal?.post {
-                    addOutput(bytes)
-                    terminal?.append(bytes)
+                addOutput(bytes)
+                val view = stateRef.terminal ?: terminal
+                if (view != null) {
+                    view.post {
+                        view.append(bytes)
+                        // 已实时写过的 view 不再 history flush
+                        view.setTag(R.id.lumin_term_live_output, true)
+                    }
                 }
             },
             resolveText = { id, args -> context.getString(id, *args) },
             onStatus = { detail ->
-                terminal?.post {
-                    if (!closingPage) {
-                        connectDetails.add(detail)
-                    }
-                }
+                if (!closingPage) connectDetails.add(detail)
+                AppLog.i("Term", "status $detail")
             },
             confirmHostKey = { confirmHostKey(it) },
         )
-        shell = nextShell
+        stateRef.shell = nextShell
         var keepConnectPage = false
-        runCatching { nextShell.connect() }
-            .onSuccess {
-                if (closingPage) {
-                    nextShell.close()
-                    return@onSuccess
-                }
-                shellReady = true
-                if (!ptySized && pendingColumns > 0 && pendingRows > 0) resizePtyOnce(pendingColumns, pendingRows)
+        try {
+            // 握手阶段用 NonCancellable 保护：重组取消协程时不要把已连上的会话当失败关掉
+            withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
+                nextShell.connect()
             }
-            .onFailure {
+            if (closingPage) {
+                AppLog.w("Term", "connected but page closing")
+                nextShell.close()
+                shell = null
+                stateRef.shell = null
+                shellReady = false
+            } else {
+                shell = nextShell
+                stateRef.shell = nextShell
+                shellReady = true
+                AppLog.i(
+                    "Term",
+                    "shellReady=true terminal=${stateRef.terminal != null} historyBytes=${outputHistory.sumOf { it.size }}",
+                )
+            }
+        } catch (it: Throwable) {
+            // 若取消时会话其实已连上，保留并标记就绪（日志里的 LeftCompositionCancellationException）
+            if (it is CancellationException && nextShell.isConnected && !closingPage) {
+                AppLog.w("Term", "connect cancelled after SSH up, keeping session")
+                shell = nextShell
+                stateRef.shell = nextShell
+                shellReady = true
+            } else {
+                AppLog.e("Term", "connect failed", it)
+                nextShell.close()
+                shell = null
+                stateRef.shell = null
+                shellReady = false
                 if (!closingPage && it is HostKeyRejectedException) {
-                    nextShell.close()
-                    shell = null
-                    shellReady = false
                     connecting = false
                     closeConnectionPage()
+                    return@LaunchedEffect
                 } else if (!closingPage && it !is CancellationException) {
-                    shellReady = false
-                    shell = null
-                    nextShell.close()
                     val rawErrorText = it.message.orEmpty()
                     val errorText = context.userErrorText(it)
-                    val isAuthFailure = sshConn.authMethod == "password" && (rawErrorText.contains("Auth fail", ignoreCase = true) || rawErrorText.contains("认证失败"))
+                    val isAuthFailure = sshConn.authMethod == "password" && (
+                        rawErrorText.contains("Auth fail", ignoreCase = true) ||
+                            rawErrorText.contains("认证失败")
+                        )
                     if (isAuthFailure) {
                         keepConnectPage = true
                         connectDetails.add(context.getString(R.string.auth_failed_retry_password))
                         showAuthFailedPrompt()
                     } else {
                         keepConnectPage = true
-                        connectDetails.add(context.getString(R.string.connection_failed_detail, errorText.ifBlank { context.getString(R.string.unknown) }))
+                        connectDetails.add(
+                            context.getString(
+                                R.string.connection_failed_detail,
+                                errorText.ifBlank { context.getString(R.string.unknown) },
+                            ),
+                        )
                         showConnectionFailedPrompt(errorText)
                     }
                 }
             }
-        if (!keepConnectPage) connecting = false
+        } finally {
+            if (!keepConnectPage) connecting = false
+            AppLog.i("Term", "connect effect done ready=$shellReady connecting=$connecting")
+        }
+    }
+
+    // terminal 后挂载且「从未实时写过」时才刷 history，避免 MOTD 双份
+    LaunchedEffect(terminal, shellReady) {
+        val view = terminal ?: return@LaunchedEffect
+        stateRef.terminal = view
+        if (!shellReady || outputHistory.isEmpty()) return@LaunchedEffect
+        if (view.getTag(R.id.lumin_term_live_output) == true) {
+            AppLog.d("Term", "skip history flush: view already has live output")
+            return@LaunchedEffect
+        }
+        AppLog.i("Term", "flush history chunks=${outputHistory.size}")
+        outputHistory.forEach { view.append(it) }
+        view.setTag(R.id.lumin_term_live_output, true)
     }
 
     Column(Modifier.fillMaxSize().background(LuminColors.TerminalBg)) {

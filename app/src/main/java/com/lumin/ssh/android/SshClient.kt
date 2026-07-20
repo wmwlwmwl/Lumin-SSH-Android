@@ -103,11 +103,14 @@ class SshShellSession(
     private fun text(id: Int, vararg args: Any): String = resolveText(id, args)
 
     suspend fun connect() = withContext(Dispatchers.IO) {
+        AppLog.i("SSH", "connect begin ${conn.username}@${conn.host}:${conn.port} auth=${conn.authMethod} proxy=${conn.proxyMode}")
         onStatus(text(R.string.ssh_preparing_connection, conn.host, conn.port))
         if (conn.authMethod == "privateKey" && conn.privateKey.isBlank()) {
+            AppLog.e("SSH", "missing private key")
             throw IllegalStateException(text(R.string.ssh_missing_private_key))
         }
         if (conn.authMethod != "privateKey" && conn.password.isBlank()) {
+            AppLog.e("SSH", "missing password")
             throw IllegalStateException(text(R.string.ssh_missing_password))
         }
 
@@ -133,13 +136,15 @@ class SshShellSession(
             setConfig("StrictHostKeyChecking", "yes")
             setConfig("server_host_key", SSH_HOST_KEY_ALGORITHMS)
             setConfig("PreferredAuthentications", if (conn.authMethod == "privateKey") "publickey" else "keyboard-interactive,password")
-            timeout = 15000 // ponytail: socket 读取超时（连接建立后），区别于下方 connect(15000) 的握手超时
+            // 握手超时；连上后必须清零，否则 SO_TIMEOUT 会杀读线程
+            timeout = 15000
         }
         session = nextSession
         onStatus(text(R.string.ssh_connecting_socket))
         if (closed.get()) throw CancellationException(text(R.string.ssh_connection_cancelled))
         runCatching { nextSession.connect(15000) }
             .getOrElse {
+                AppLog.e("SSH", "session.connect failed", it)
                 if (hostKeyRejected.get() || it is CancellationException || it.cause is HostKeyRejectedException || it.message.orEmpty().contains("主机密钥未接受")) {
                     throw HostKeyRejectedException()
                 }
@@ -153,12 +158,21 @@ class SshShellSession(
 
         if (hostKeyRejected.get()) {
             runCatching { nextSession.disconnect() }
+            AppLog.w("SSH", "host key rejected")
             throw HostKeyRejectedException()
         }
+        // 连上后取消读超时，并开 keepalive
+        nextSession.timeout = 0
+        runCatching {
+            nextSession.setServerAliveInterval(30_000)
+            nextSession.serverAliveCountMax = 3
+        }
+        AppLog.i("SSH", "session connected, opening shell")
         onStatus(text(R.string.ssh_opening_shell))
         val nextChannel = nextSession.openChannel("shell") as ChannelShell
         nextChannel.setPty(true)
-        nextChannel.setPtyType("xterm-256color")
+        // 仅 connect 前设一次保守尺寸；连上后再 setPtySize 在本机实测会断会话（含「只一次」）
+        nextChannel.setPtyType("xterm-256color", 80, 24, 640, 384)
         val nextInput = nextChannel.inputStream
         val nextOutput = nextChannel.outputStream
         onStatus(text(R.string.ssh_connecting_channel))
@@ -168,6 +182,7 @@ class SshShellSession(
         channel = nextChannel
         output = nextOutput
         onStatus(text(R.string.ssh_waiting_output))
+        AppLog.i("SSH", "shell ready, start reader")
         startReader(nextInput)
     }
 
@@ -178,14 +193,19 @@ class SshShellSession(
     val isConnected: Boolean get() = !closed.get() && channel?.isConnected == true
 
     suspend fun sendRaw(text: String) = withContext(Dispatchers.IO) {
-        val out = output ?: throw IllegalStateException(text(R.string.ssh_not_connected))
+        val out = output
+        if (out == null) {
+            AppLog.w("SSH", "sendRaw while output=null len=${text.length} closed=${closed.get()} ch=${channel?.isConnected}")
+            throw IllegalStateException(text(R.string.ssh_not_connected))
+        }
         val bytes = text.toByteArray()
         out.write(bytes)
         out.flush()
     }
 
+    /** 远程 WINCH 关闭（连上后 setPtySize 会断会话）；保留方法供 onResize 调用。 */
     fun resize(columns: Int, rows: Int) {
-        runCatching { channel?.setPtySize(columns, rows, columns * 8, rows * 16) }
+        // no-op：本地行列由 TermuxTerminalSurface 自行处理
     }
 
     override fun close() {
@@ -221,15 +241,36 @@ class SshShellSession(
 
     private fun startReader(stream: InputStream) {
         Thread({
-            val buffer = ByteArray(4096)
+            val buffer = ByteArray(32 * 1024)
+            var total = 0L
             while (!closed.get()) {
-                val count = runCatching { stream.read(buffer) }.getOrElse { -1 }
-                if (count <= 0) break
-                onOutput(buffer.copyOf(count), count)
+                val count = try {
+                    stream.read(buffer)
+                } catch (err: java.net.SocketTimeoutException) {
+                    AppLog.d("SSH", "reader socket timeout (ignored)")
+                    0
+                } catch (err: Exception) {
+                    AppLog.e("SSH", "reader error", err)
+                    -1
+                }
+                if (count < 0) break
+                if (count == 0) continue
+                total += count
+                try {
+                    onOutput(buffer.copyOf(count), count)
+                } catch (err: Exception) {
+                    // UI 回调异常绝不能杀掉读线程/会话
+                    AppLog.e("SSH", "onOutput callback error", err)
+                }
             }
+            val chConnected = runCatching { channel?.isConnected }.getOrNull()
+            val sessConnected = runCatching { session?.isConnected }.getOrNull()
+            AppLog.i(
+                "SSH",
+                "reader exit totalBytes=$total closed=${closed.get()} ch=$chConnected sess=$sessConnected",
+            )
             if (!closed.get()) {
-                // 控制符必须在代码里发：strings.xml 常丢掉 \r，只剩 \n 会停在旧列。
-                // ESC[31m 红字，ESC[0m 复位
+                // 控制符必须在代码里发：strings.xml 常丢掉 \r
                 emit("\r\n[31m${text(R.string.ssh_disconnected)}[0m\r\n")
             }
         }, "ssh-reader-${conn.host}").apply {

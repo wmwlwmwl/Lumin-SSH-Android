@@ -4,14 +4,17 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -19,11 +22,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -78,37 +76,45 @@ fun TerminalToolbar(
                     .background(LuminColors.TerminalBg)
                     .padding(horizontal = 8.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                // 多行时按钮对齐顶部
+                verticalAlignment = Alignment.Top,
             ) {
-                BasicTextField(
-                    value = command,
-                    onValueChange = onCommandChange,
-                    singleLine = true,
-                    textStyle = TextStyle(color = LuminColors.TerminalText, fontFamily = FontFamily.Monospace),
-                    cursorBrush = SolidColor(LuminColors.TerminalCursor),
-                    decorationBox = { innerTextField ->
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(LuminColors.TerminalKey)
-                                .border(1.dp, LuminColors.TerminalBorder, RoundedCornerShape(10.dp))
-                                .padding(horizontal = 10.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text("> ", color = LuminColors.TerminalCursor, fontFamily = FontFamily.Monospace)
-                            innerTextField()
-                        }
-                    },
-                    modifier = Modifier.weight(1f).onPreviewKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
-                            onSendPrompt()
-                            true
-                        } else {
-                            false
-                        }
-                    },
-                )
+                // 支持多行脚本显示；发送用右侧按钮（回车=换行，不直接发送）
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .heightIn(min = 40.dp, max = 160.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(LuminColors.TerminalKey)
+                        .border(1.dp, LuminColors.TerminalBorder, RoundedCornerShape(10.dp))
+                        .padding(start = 10.dp, end = 18.dp, top = 10.dp, bottom = 10.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text(
+                        "> ",
+                        color = LuminColors.TerminalCursor,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    BasicTextField(
+                        value = command,
+                        onValueChange = onCommandChange,
+                        // 多行：粘贴/输入脚本时完整显示，不只第一行
+                        singleLine = false,
+                        maxLines = 8,
+                        textStyle = TextStyle(
+                            color = LuminColors.TerminalText,
+                            fontFamily = FontFamily.Monospace,
+                            lineHeight = 20.sp,
+                            letterSpacing = 0.3.sp,
+                        ),
+                        cursorBrush = SolidColor(LuminColors.TerminalCursor),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 20.dp, max = 140.dp)
+                            .verticalScroll(rememberScrollState())
+                            .padding(end = 14.dp),
+                    )
+                }
                 LuminPrimaryButton(enabled = command.isNotBlank(), onClick = { onSendPrompt() }) {
                     Text(stringResource(R.string.send))
                 }

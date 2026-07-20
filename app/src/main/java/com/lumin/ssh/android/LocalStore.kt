@@ -188,6 +188,13 @@ class LocalStore(context: Context) {
         prefs.edit().putBoolean("hide_sensitive", hide).apply()
     }
 
+    /** 应用诊断日志，默认开启 */
+    fun loadAppLogEnabled(): Boolean = prefs.getBoolean("app_log_enabled", true)
+
+    fun saveAppLogEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("app_log_enabled", enabled).apply()
+    }
+
     fun loadTerminalFontSize() = prefs.getInt("terminal_font_size", 8)
 
     fun saveTerminalFontSize(size: Int) {
