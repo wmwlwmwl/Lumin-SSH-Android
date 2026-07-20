@@ -162,12 +162,26 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         return row
     }
 
+    private fun lineTextAt(screen: com.termux.terminal.TerminalBuffer, cols: Int, row: Int): String =
+        runCatching { screen.getSelectedText(0, row, cols - 1, row, false, false) }.getOrDefault("")
+
+    private fun logicalParts(
+        screen: com.termux.terminal.TerminalBuffer,
+        cols: Int,
+        hintRow: Int,
+        minRow: Int,
+        maxRow: Int,
+    ): LogicalLineParts = expandLogicalLine(
+        startHintRow = hintRow,
+        maxRow = maxRow,
+        minRow = minRow,
+        isWrapAt = { r -> runCatching { screen.getLineWrap(r) }.getOrDefault(false) },
+        lineText = { r -> lineTextAt(screen, cols, r) },
+    )
+
     /**
      * 可见行扫描 URL，只画下划线（不铺底）。
-     *
-     * 不用 renderer 基线推算（容易压进 g/p/q 下伸部），改按可见行格子：
-     *   行 i 顶 = i * lineHeight，行底 = (i+1)*lineHeight
-     * 线画在行底下方 1～2dp（两行之间的缝里），绝不与字形重叠。
+     * wrap 续行拼成逻辑行再匹配，换行 URL 完整高亮/可点。
      */
     private fun drawLinkHighlights(canvas: Canvas, emulator: TerminalEmulator) {
         val screen = emulator.screen
@@ -177,23 +191,44 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         val step = renderer.fontLineSpacing.toFloat()
         if (step <= 0f) return
         val skipFrom = inputStartRow(emulator)
-        // 行底再往下一点，落在行间空隙（用户反馈要偏下）
         val gap = (3.5f * resources.displayMetrics.density).coerceAtMost(step * 0.3f)
-        for (i in 0 until rows) {
+        val minRow = topRow
+        val maxRow = topRow + rows - 1
+        val drawn = HashSet<String>()
+        var i = 0
+        while (i < rows) {
             val row = topRow + i
-            if (row >= skipFrom) continue
-            // join=false：单行原文，避免 wrap 拼接打乱列下标
-            val line = runCatching { screen.getSelectedText(0, row, cols - 1, row, false, false) }.getOrNull() ?: continue
-            if (line.isBlank()) continue
-            val spans = findTerminalUrlSpans(line)
-            if (spans.isEmpty()) continue
-            val underlineY = (i + 1) * step + gap
-            for (span in spans) {
-                val left = span.start * fontWidth
-                val right = span.end * fontWidth
-                if (right <= left) continue
-                canvas.drawLine(left, underlineY, right, underlineY, linkUnderlinePaint)
+            if (row >= skipFrom) break
+            // 续行交给逻辑行起点处理，避免重复
+            if (row > minRow && runCatching { screen.getLineWrap(row - 1) }.getOrDefault(false)) {
+                i++
+                continue
             }
+            val parts = logicalParts(screen, cols, row, minRow, maxOf(maxRow, skipFrom - 1))
+            val spans = findTerminalUrlSpans(parts.joined)
+            for (span in spans) {
+                val id = "${parts.startRow}:${span.start}-${span.end}:${span.url}"
+                if (!drawn.add(id)) continue
+                // 按逻辑行分段画每条物理行的下划线
+                var cursor = 0
+                parts.texts.forEachIndexed { segIdx, text ->
+                    val segStart = cursor
+                    val segEnd = cursor + text.length
+                    cursor = segEnd
+                    if (span.end <= segStart || span.start >= segEnd) return@forEachIndexed
+                    val physRow = parts.startRow + segIdx
+                    val vis = physRow - topRow
+                    if (vis < 0 || vis >= rows || physRow >= skipFrom) return@forEachIndexed
+                    val col0 = (span.start - segStart).coerceAtLeast(0)
+                    val col1 = (span.end - segStart).coerceAtMost(text.length)
+                    if (col1 <= col0) return@forEachIndexed
+                    val left = col0 * fontWidth
+                    val right = col1 * fontWidth
+                    val underlineY = (vis + 1) * step + gap
+                    canvas.drawLine(left, underlineY, right, underlineY, linkUnderlinePaint)
+                }
+            }
+            i += parts.texts.size.coerceAtLeast(1)
         }
     }
 
@@ -355,11 +390,27 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         val current = emulator ?: return false
         val screen = current.screen
         val (column, row) = positionFromTouch(event)
-        // 输入行（含上键历史）不点链接
         if (row >= inputStartRow(current)) return false
-        val word = runCatching { screen.getWordAtLocation(column, row) }.getOrNull().orEmpty()
-        val url = extractTerminalUrl(word) ?: return false
-        showLinkActionDialog(url)
+        val cols = current.mColumns
+        // 逻辑行拼接，换行 URL 也能命中完整地址
+        val minRow = -screen.activeTranscriptRows
+        val maxRow = current.mRows - 1
+        val parts = logicalParts(screen, cols, row, minRow, maxRow)
+        val spans = findTerminalUrlSpans(parts.joined)
+        if (spans.isEmpty()) return false
+        // 点击列映射到 joined 下标
+        var offset = 0
+        var joinedCol = -1
+        parts.texts.forEachIndexed { idx, text ->
+            val phys = parts.startRow + idx
+            if (phys == row) {
+                joinedCol = offset + column.coerceIn(0, text.length.coerceAtLeast(1) - 1)
+            }
+            offset += text.length
+        }
+        if (joinedCol < 0) return false
+        val hit = spans.firstOrNull { joinedCol in it.start until it.end } ?: return false
+        showLinkActionDialog(hit.url)
         return true
     }
 

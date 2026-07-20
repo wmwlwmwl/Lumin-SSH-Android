@@ -27,7 +27,7 @@ fun extractTerminalUrl(word: String): String? {
     return normalizeTerminalUrlMatch(match.value)
 }
 
-/** 扫描一整行，返回所有可点击 URL 的区间（用于高亮）。 */
+/** 扫描一整行（或已拼好的逻辑行），返回 URL 区间。 */
 fun findTerminalUrlSpans(line: String): List<TerminalUrlSpan> {
     if (line.isBlank()) return emptyList()
     return URL_IN_WORD.findAll(line).mapNotNull { match ->
@@ -37,6 +37,46 @@ fun findTerminalUrlSpans(line: String): List<TerminalUrlSpan> {
         val url = normalizeTerminalUrlMatch(stripped) ?: return@mapNotNull null
         TerminalUrlSpan(match.range.first, end, url)
     }.toList()
+}
+
+/**
+ * 逻辑行分段（换行 wrap 续写）。rowLengths[i] 为该行字符数，
+ * joined 下标可映射回 (row, col)。
+ */
+data class LogicalLineParts(
+    val startRow: Int,
+    val texts: List<String>,
+) {
+    val joined: String get() = texts.joinToString("")
+    fun posOf(index: Int): Pair<Int, Int> {
+        var rem = index
+        texts.forEachIndexed { i, t ->
+            if (rem < t.length) return startRow + i to rem
+            rem -= t.length
+        }
+        val last = texts.lastIndex
+        return startRow + last to texts[last].length.coerceAtLeast(0)
+    }
+}
+
+/** 从任意行扩到逻辑行起止（getLineWrap(row)==true 表示该行末会续到下一行）。 */
+fun expandLogicalLine(
+    startHintRow: Int,
+    maxRow: Int,
+    minRow: Int,
+    isWrapAt: (Int) -> Boolean,
+    lineText: (Int) -> String,
+): LogicalLineParts {
+    var start = startHintRow.coerceIn(minRow, maxRow)
+    while (start > minRow && isWrapAt(start - 1)) start--
+    val texts = mutableListOf<String>()
+    var row = start
+    while (row <= maxRow) {
+        texts += lineText(row)
+        if (!isWrapAt(row)) break
+        row++
+    }
+    return LogicalLineParts(start, texts)
 }
 
 private fun stripTrailingPunct(rawInput: String): String {

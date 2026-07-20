@@ -79,6 +79,27 @@ class SyncLogicTest {
     }
 
     @Test
+    fun expandLogicalLineJoinsWrapSegments() {
+        // 模拟两行 wrap：https://example.com/very/long/path
+        val lines = listOf("https://example.com/very/", "long/path")
+        val wraps = setOf(0) // row0 续到 row1
+        val parts = expandLogicalLine(
+            startHintRow = 1,
+            maxRow = 1,
+            minRow = 0,
+            isWrapAt = { it in wraps },
+            lineText = { lines[it] },
+        )
+        assertEquals(0, parts.startRow)
+        assertEquals("https://example.com/very/long/path", parts.joined)
+        val spans = findTerminalUrlSpans(parts.joined)
+        assertEquals(1, spans.size)
+        assertEquals("https://example.com/very/long/path", spans[0].url)
+        assertEquals(0 to 0, parts.posOf(0))
+        assertEquals(1 to 0, parts.posOf(lines[0].length))
+    }
+
+    @Test
     fun hasDuplicateConnectionMatchesHostPortUsername() {
         val list = listOf(Connection("a", "A", "1.1.1.1", port = 22, username = "root"))
         assertTrue(hasDuplicateConnection(list, "1.1.1.1", 22, "root"))
