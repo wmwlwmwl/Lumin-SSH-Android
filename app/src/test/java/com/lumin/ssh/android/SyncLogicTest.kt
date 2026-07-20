@@ -29,10 +29,10 @@ private class FakeSyncProvider(
         if (passwords[name].orEmpty() != recoveryPassword) throw RecoveryPasswordException()
         return backups.getValue(name)
     }
-    override fun backupConnections(connections: List<Connection>, credentials: List<Credential>, quickCommands: String, proxyNodes: List<ProxyNode>, aiProvidersRaw: String, aiGlobalSettingsRaw: String, snapshotTime: Long, maxBackups: Int, recoveryPassword: String): String {
+    override fun backupConnections(connections: List<Connection>, credentials: List<Credential>, quickCommands: String, proxyNodes: List<ProxyNode>, aiProvidersRaw: String, aiGlobalSettingsRaw: String, snapshotTime: Long, maxBackups: Int, recoveryPassword: String, deletedConnections: List<SyncTombstone>, deletedCredentials: List<SyncTombstone>, tombstonePrunedBefore: Long): String {
         uploadFailure?.let { throw it }
         val name = "connections_backup_${++sequence}.json"
-        val snapshot = SyncSnapshot(connections, credentials, proxyNodes, quickCommands, aiProvidersRaw, aiGlobalSettingsRaw, snapshotTime)
+        val snapshot = SyncSnapshot(connections, credentials, proxyNodes, quickCommands, aiProvidersRaw, aiGlobalSettingsRaw, deletedConnections, deletedCredentials, tombstonePrunedBefore, snapshotTime)
         backups[name] = snapshot
         passwords[name] = recoveryPassword
         uploadedSnapshots += snapshot
@@ -80,7 +80,11 @@ class SyncLogicTest {
     fun multiProviderUnionDoesNotDeleteProviderOnlyItem() {
         val a = Connection("a", "a", "a.example", username = "root", lastModified = 10)
         val b = Connection("b", "b", "b.example", username = "root", lastModified = 20)
-        val merged = SyncHelper.mergeConnections(SyncHelper.mergeConnections(emptyList(), listOf(a), -1), listOf(b), -1)
+        val merged = SyncHelper.mergeConnections(
+            SyncHelper.mergeConnections(emptyList(), listOf(a), -1).connections,
+            listOf(b),
+            -1,
+        ).connections
         assertEquals(setOf("a", "b"), merged.map { it.id }.toSet())
     }
 
@@ -349,7 +353,11 @@ class SyncLogicTest {
 
         assertEquals("skip", SyncHelper.planSync(local, listOf(same), 10, 100).action)
         assertEquals("upload", SyncHelper.planSync(local, listOf(null), 10, 100).action)
-        assertEquals("download", SyncHelper.planSync(local, listOf(SyncSnapshot(listOf(remoteItem), emptyList(), snapshotTime = 40)), 25, 100).action)
+        // lastSync=25 时本地-only item(lm=20) 会被启发式删除并写墓碑，因此云端也需上传 → merge，不是纯 download
+        val downloadish = SyncHelper.planSync(local, listOf(SyncSnapshot(listOf(remoteItem), emptyList(), snapshotTime = 40)), 25, 100)
+        assertEquals("merge", downloadish.action)
+        assertEquals(listOf("remote"), downloadish.snapshot.connections.map { it.id })
+        assertTrue(downloadish.snapshot.deletedConnections.any { it.id == "local" && it.deletedAt > 20 })
         val merged = SyncHelper.planSync(local, listOf(same, different, null), 10, 100)
         assertEquals("merge", merged.action)
         assertEquals(setOf(0, 1, 2), merged.uploadIndexes)
@@ -358,11 +366,22 @@ class SyncLogicTest {
 
     @Test
     fun newerCloudSnapshotPropagatesDeletionIntoFinalSnapshot() {
+        // 连接删除只信墓碑，不再靠 snapshot_time 二次过滤
         val deleted = Connection("deleted", "deleted", "deleted.example", username = "root", lastModified = 10)
         val kept = Connection("kept", "kept", "kept.example", username = "root", lastModified = 20)
-        val local = SyncSnapshot(listOf(deleted, kept), emptyList(), snapshotTime = 20)
+        val local = SyncSnapshot(
+            listOf(deleted, kept),
+            emptyList(),
+            deletedConnections = listOf(SyncTombstone("deleted", 30)),
+            snapshotTime = 20,
+        )
         val olderCloud = local.copy(snapshotTime = 21)
-        val newerCloud = SyncSnapshot(listOf(kept), emptyList(), snapshotTime = 30)
+        val newerCloud = SyncSnapshot(
+            listOf(kept),
+            emptyList(),
+            deletedConnections = listOf(SyncTombstone("deleted", 30)),
+            snapshotTime = 30,
+        )
 
         val plan = SyncHelper.planSync(local, listOf(olderCloud, newerCloud), 20, 40)
 
@@ -370,4 +389,104 @@ class SyncLogicTest {
         assertEquals(setOf(0), plan.uploadIndexes)
         assertEquals("merge", plan.action)
     }
+
+    @Test
+    fun switchProviderDoesNotDeleteByForeignLastSync() {
+        val shared = Connection("shared", "shared", "shared.example", username = "root", lastModified = 100)
+        val r2Only = Connection("r2-only", "r2", "r2.example", username = "root", lastModified = 150)
+        val local = SyncSnapshot(listOf(shared, r2Only), emptyList(), deletedConnections = emptyList(), snapshotTime = 200)
+        val remote = SyncSnapshot(listOf(shared), emptyList(), snapshotTime = 100)
+        // WebDAV lastSync=0 (never synced) even if R2 lastSync was high
+        val plan = SyncHelper.planSync(local, listOf(remote), lastSyncTime = 0, syncTime = 300)
+        assertEquals(setOf("shared", "r2-only"), plan.snapshot.connections.map { it.id }.toSet())
+    }
+
+    @Test
+    fun tombstonePropagatesExplicitDelete() {
+        val keep = Connection("keep", "keep", "keep.example", username = "root", lastModified = 100)
+        val drop = Connection("drop", "drop", "drop.example", username = "root", lastModified = 100)
+        val local = SyncSnapshot(listOf(keep, drop), emptyList(), snapshotTime = 100)
+        val remote = SyncSnapshot(
+            listOf(keep),
+            emptyList(),
+            deletedConnections = listOf(SyncTombstone("drop", 500)),
+            snapshotTime = 500,
+        )
+        // lastSync 必须 < drop.lastModified，否则会先按 lastSync 启发式删掉 drop
+        val plan = SyncHelper.planSync(local, listOf(remote), lastSyncTime = 50, syncTime = 600)
+        assertEquals(listOf("keep"), plan.snapshot.connections.map { it.id })
+        assertEquals(500L, plan.snapshot.deletedConnections.first { it.id == "drop" }.deletedAt)
+        // 远端已有相同墓碑时可能无需再上传该端；连接已按墓碑删除即可
+        assertEquals("download", plan.action)
+    }
+
+    @Test
+    fun hostPortDedupWritesTombstoneForDroppedId() {
+        val b = Connection("id-B", "B", "1.2.3.4", username = "root", lastModified = 200)
+        val a = Connection("id-A", "A", "1.2.3.4", username = "root", lastModified = 100)
+        val local = SyncSnapshot(listOf(b), emptyList(), snapshotTime = 200)
+        val remote = SyncSnapshot(listOf(a), emptyList(), snapshotTime = 100)
+        val plan = SyncHelper.planSync(local, listOf(remote), lastSyncTime = 0, syncTime = 300)
+        assertEquals(listOf("id-B"), plan.snapshot.connections.map { it.id })
+        assertTrue(plan.snapshot.deletedConnections.any { it.id == "id-A" && it.deletedAt > 100 })
+    }
+
+    @Test
+    fun inferredDeleteWritesTombstoneSoUploadIsNotEmpty() {
+        // 复现 1.txt：本地按 lastSync 启发式删掉 drop，上传不得是「人没了、墓碑也空」
+        val keep = Connection("keep", "keep", "keep.example", username = "root", lastModified = 100)
+        val drop = Connection("drop", "drop", "drop.example", username = "root", lastModified = 100)
+        val local = SyncSnapshot(listOf(keep, drop), emptyList(), snapshotTime = 200)
+        val remote = SyncSnapshot(listOf(keep), emptyList(), deletedConnections = emptyList(), snapshotTime = 150)
+        val plan = SyncHelper.planSync(local, listOf(remote), lastSyncTime = 150, syncTime = 300)
+        assertEquals(listOf("keep"), plan.snapshot.connections.map { it.id })
+        val tomb = plan.snapshot.deletedConnections.firstOrNull { it.id == "drop" }
+        assertTrue(tomb != null && tomb.deletedAt > 100, "启发式删除必须写墓碑: ${plan.snapshot.deletedConnections}")
+        assertTrue(plan.uploadIndexes.isNotEmpty(), "应上传带墓碑的合并结果")
+    }
+
+    @Test
+    fun previewConflictLogicMatchesShouldDrop() {
+        // 本地墓碑 drop@500，远端仍有 drop lm=100 → 冲突；lm=600 → 不冲突（远端更新）
+        val tombs = listOf(SyncTombstone("drop", 500))
+        val remoteOld = Connection("drop", "被删", "drop.example", username = "root", lastModified = 100)
+        val remoteNew = Connection("drop", "被删", "drop.example", username = "root", lastModified = 600)
+        val map = tombstoneMap(tombs)
+        fun wouldDelete(c: Connection): Boolean {
+            val at = map[c.id] ?: return false
+            return at >= c.lastModified
+        }
+        assertTrue(wouldDelete(remoteOld))
+        assertTrue(!wouldDelete(remoteNew))
+    }
+
+    @Test
+    fun pruneWatermarkBlocksRemoteTombstoneRestore() {
+        // 清理删除记录后 tombstonePrunedBefore 推进，远端旧墓碑不得再被并回来
+        val keep = Connection("keep", "keep", "keep.example", username = "root", lastModified = 100)
+        val local = SyncSnapshot(
+            listOf(keep),
+            emptyList(),
+            deletedConnections = emptyList(),
+            tombstonePrunedBefore = 500,
+            snapshotTime = 600,
+        )
+        val remote = SyncSnapshot(
+            listOf(keep),
+            emptyList(),
+            deletedConnections = listOf(SyncTombstone("old", 100)),
+            snapshotTime = 700,
+        )
+        val plan = SyncHelper.planSync(local, listOf(remote), lastSyncTime = 50, syncTime = 800)
+        assertTrue(plan.snapshot.deletedConnections.none { it.id == "old" }, "水位线应挡住旧墓碑: ${plan.snapshot.deletedConnections}")
+        assertEquals(500L, plan.snapshot.tombstonePrunedBefore)
+    }
+
+    @Test
+    fun snapshotBusinessEqualIncludesTombstones() {
+        val base = SyncSnapshot(listOf(Connection("a", "a", "a.example", username = "root")), emptyList())
+        val withTomb = base.copy(deletedConnections = listOf(SyncTombstone("gone", 1)))
+        assertTrue(!SyncHelper.snapshotBusinessEqual(base, withTomb))
+    }
+
 }

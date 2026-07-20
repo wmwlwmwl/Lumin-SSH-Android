@@ -98,7 +98,7 @@ class LocalStore(context: Context) {
         }
     }
 
-    fun saveSnapshot(snapshot: SyncSnapshot, lastSyncTime: Long? = null): Boolean {
+    fun saveSnapshot(snapshot: SyncSnapshot, lastSyncTime: Long? = null, lastSyncProvider: String? = null): Boolean {
         val editor = prefs.edit()
             .putString("connections_enc", encryptSecret(connectionsToJson(snapshot.connections)))
             .putString("credentials_enc", encryptSecret(credentialsToJson(snapshot.credentials)))
@@ -106,10 +106,26 @@ class LocalStore(context: Context) {
             .putString("quick_commands_enc", snapshot.quickCommands.takeIf { it.isNotBlank() }?.let(::encryptSecret).orEmpty())
             .putString("ai_providers_enc", snapshot.aiProvidersRaw.takeIf { it.isNotBlank() }?.let(::encryptSecret).orEmpty())
             .putString("ai_global_settings_enc", snapshot.aiGlobalSettingsRaw.takeIf { it.isNotBlank() }?.let(::encryptSecret).orEmpty())
+            .putString(
+                "sync_tombstones",
+                tombstonesStoreToJson(
+                    snapshot.deletedConnections,
+                    snapshot.deletedCredentials,
+                    maxOf(snapshot.tombstonePrunedBefore, loadTombstonePrunedBefore()),
+                ),
+            )
             .putLong("snapshot_time", snapshot.snapshotTime)
             .remove("connections").remove("credentials").remove("proxy_nodes")
             .remove("quick_commands").remove("ai_providers").remove("ai_global_settings")
-        lastSyncTime?.let { editor.putLong("last_sync_time", it) }
+        lastSyncTime?.let { ts ->
+            val provider = lastSyncProvider?.trim().orEmpty()
+            if (provider.isNotBlank()) {
+                putLastSyncTime(editor, provider, ts)
+            } else {
+                // 兼容旧调用：无 provider 时只写 max 展示值
+                editor.putLong("last_sync_time", ts)
+            }
+        }
         return editor.commit()
     }
 
@@ -215,8 +231,192 @@ class LocalStore(context: Context) {
             .apply()
     }
 
-    fun loadLastSyncTime(): Long = prefs.getLong("last_sync_time", 0L)
-    fun saveLastSyncTime(time: Long) = prefs.edit().putLong("last_sync_time", time).apply()
+    fun loadLastSyncTime(): Long = loadLastSyncTimeMap().values.maxOrNull() ?: 0L
+
+    fun loadLastSyncTime(provider: String): Long {
+        val key = provider.trim()
+        if (key.isBlank()) return 0L
+        return loadLastSyncTimeMap()[key] ?: 0L
+    }
+
+    fun loadLastSyncTimeMin(providers: Collection<String>): Long {
+        if (providers.isEmpty()) return 0L
+        val map = loadLastSyncTimeMap()
+        var min: Long? = null
+        for (raw in providers) {
+            val p = raw.trim()
+            if (p.isBlank()) return 0L
+            val t = map[p] ?: 0L
+            if (t <= 0L) return 0L
+            min = if (min == null) t else minOf(min, t)
+        }
+        return min ?: 0L
+    }
+
+    fun saveLastSyncTime(time: Long) {
+        // 兼容旧调用：仅更新 UI 展示用最大值，不绑定后端
+        if (time > 0L) prefs.edit().putLong("last_sync_time", time).apply()
+    }
+
+    fun saveLastSyncTime(provider: String, time: Long) {
+        val key = provider.trim()
+        if (key.isBlank() || time <= 0L) return
+        val editor = prefs.edit()
+        putLastSyncTime(editor, key, time)
+        editor.apply()
+    }
+
+    fun saveLastSyncTimes(providers: Collection<String>, time: Long) {
+        if (time <= 0L || providers.isEmpty()) return
+        val editor = prefs.edit()
+        var changed = false
+        for (raw in providers) {
+            val key = raw.trim()
+            if (key.isBlank()) continue
+            putLastSyncTime(editor, key, time)
+            changed = true
+        }
+        if (changed) editor.apply()
+    }
+
+    private fun putLastSyncTime(editor: android.content.SharedPreferences.Editor, provider: String, time: Long) {
+        val map = loadLastSyncTimeMap().toMutableMap()
+        map[provider] = time
+        editor.putString("last_sync_times", JSONObject(map.mapValues { it.value }).toString())
+        editor.putLong("last_sync_time", map.values.maxOrNull() ?: time)
+    }
+
+    private fun loadLastSyncTimeMap(): Map<String, Long> {
+        val raw = prefs.getString("last_sync_times", "").orEmpty().trim()
+        if (raw.isNotBlank()) {
+            return runCatching {
+                val obj = JSONObject(raw)
+                val out = linkedMapOf<String, Long>()
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val v = obj.optLong(k, 0L)
+                    if (k.isNotBlank() && v > 0L) out[k] = v
+                }
+                out
+            }.getOrDefault(emptyMap())
+        }
+        // 旧版全局数字：无法区分后端，直接丢弃，避免 R2 lastSync 污染 WebDAV 删除判定
+        return emptyMap()
+    }
+
+    data class TombstoneStore(
+        val connections: List<SyncTombstone> = emptyList(),
+        val credentials: List<SyncTombstone> = emptyList(),
+        val prunedBefore: Long = 0L,
+    )
+
+    fun loadTombstoneStore(): TombstoneStore {
+        val raw = prefs.getString("sync_tombstones", "").orEmpty()
+        if (raw.isBlank()) return TombstoneStore()
+        return runCatching {
+            val obj = JSONObject(raw)
+            TombstoneStore(
+                connections = tombstonesFromJsonArray(obj.optJSONArray("connections")),
+                credentials = tombstonesFromJsonArray(obj.optJSONArray("credentials")),
+                prunedBefore = obj.optLong("pruned_before", 0L),
+            )
+        }.getOrDefault(TombstoneStore())
+    }
+
+    fun loadSyncTombstones(): Pair<List<SyncTombstone>, List<SyncTombstone>> {
+        val store = loadTombstoneStore()
+        return filterTombstonesNotBefore(store.connections, store.prunedBefore) to
+            filterTombstonesNotBefore(store.credentials, store.prunedBefore)
+    }
+
+    fun loadTombstonePrunedBefore(): Long = loadTombstoneStore().prunedBefore
+
+    fun saveSyncTombstones(
+        connections: List<SyncTombstone>,
+        credentials: List<SyncTombstone>,
+        prunedBefore: Long = loadTombstonePrunedBefore(),
+    ) {
+        prefs.edit().putString("sync_tombstones", tombstonesStoreToJson(connections, credentials, prunedBefore)).apply()
+    }
+
+    fun loadTombstoneStats(): Pair<Int, Int> {
+        val (c, r) = loadSyncTombstones()
+        return tombstoneMap(c).size to tombstoneMap(r).size
+    }
+
+    fun addConnectionTombstones(ids: Collection<String>, deletedAt: Long = System.currentTimeMillis()) {
+        if (deletedAt <= 0L || ids.isEmpty()) return
+        val store = loadTombstoneStore()
+        var at = deletedAt
+        if (at <= store.prunedBefore) at = store.prunedBefore + 1
+        val map = tombstoneMap(store.connections).toMutableMap()
+        var changed = false
+        for (raw in ids) {
+            val id = raw.trim()
+            if (id.isBlank()) continue
+            val prev = map[id]
+            if (prev == null || at > prev) {
+                map[id] = at
+                changed = true
+            }
+        }
+        if (changed) saveSyncTombstones(tombstonesFromMap(map), store.credentials, store.prunedBefore)
+    }
+
+    fun addCredentialTombstones(ids: Collection<String>, deletedAt: Long = System.currentTimeMillis()) {
+        if (deletedAt <= 0L || ids.isEmpty()) return
+        val store = loadTombstoneStore()
+        var at = deletedAt
+        if (at <= store.prunedBefore) at = store.prunedBefore + 1
+        val map = tombstoneMap(store.credentials).toMutableMap()
+        var changed = false
+        for (raw in ids) {
+            val id = raw.trim()
+            if (id.isBlank()) continue
+            val prev = map[id]
+            if (prev == null || at > prev) {
+                map[id] = at
+                changed = true
+            }
+        }
+        if (changed) saveSyncTombstones(store.connections, tombstonesFromMap(map), store.prunedBefore)
+    }
+
+    fun clearConnectionTombstones(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        val store = loadTombstoneStore()
+        val map = tombstoneMap(store.connections).toMutableMap()
+        var changed = false
+        for (raw in ids) {
+            val id = raw.trim()
+            if (map.remove(id) != null) changed = true
+        }
+        if (changed) saveSyncTombstones(tombstonesFromMap(map), store.credentials, store.prunedBefore)
+    }
+
+    fun clearCredentialTombstones(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        val store = loadTombstoneStore()
+        val map = tombstoneMap(store.credentials).toMutableMap()
+        var changed = false
+        for (raw in ids) {
+            val id = raw.trim()
+            if (map.remove(id) != null) changed = true
+        }
+        if (changed) saveSyncTombstones(store.connections, tombstonesFromMap(map), store.prunedBefore)
+    }
+
+    private fun tombstonesStoreToJson(
+        connections: List<SyncTombstone>,
+        credentials: List<SyncTombstone>,
+        prunedBefore: Long = 0L,
+    ): String =
+        JSONObject()
+            .put("connections", tombstonesToJsonArray(connections))
+            .put("credentials", tombstonesToJsonArray(credentials))
+            .put("pruned_before", prunedBefore)
+            .toString()
 
     fun loadSyncMode(): String = prefs.getString("sync_mode", "all") ?: "all"
     fun saveSyncMode(mode: String) = prefs.edit().putString("sync_mode", mode).apply()

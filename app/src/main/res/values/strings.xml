@@ -377,4 +377,21 @@
     <string name="error_ftps_certificate_rejected">FTPS 证书未接受%1$s</string>
     <string name="error_local_save">本地数据保存失败</string>
     <string name="error_sync_backend_missing">未配置同步后端</string>
+    <string name="deletion_records">删除记录：连接 %1$d · 凭据 %2$d</string>
+    <string name="deletion_records_hint">用于多设备同步删除，一般无需处理。</string>
+    <string name="clear_older_than">清理超过</string>
+    <string name="days_unit">%1$d 天</string>
+    <string name="clear_deletion_records">清理删除记录</string>
+    <string name="deletion_records_cleared">已清理删除记录 %1$d 条</string>
+    <string name="no_deletion_records">没有可清理的删除记录</string>
+    <string name="clear_deletion_records_failed">清理删除记录失败：%1$s</string>
+    <string name="sync_delete_confirm_title">同步删除确认</string>
+    <string name="sync_delete_confirm_body">目标云上仍存在以下项，本地删除记录同步后将删除它们：\n%1$s\n\n请选择：删除它们，或保留它们并与本地合并。</string>
+    <string name="sync_apply_deletions">删除</string>
+    <string name="sync_keep_cloud_items">保留并合并</string>
+    <string name="sync_conflict_servers">服务器：%1$s</string>
+    <string name="sync_conflict_credentials">凭据：%1$s</string>
+    <string name="sync_tombstone_needs_manual">检测到删除记录将影响目标云上的服务器，已跳过自动同步。请打开同步设置，手动点「合并同步」确认删除或保留。</string>
+    <string name="sync_preview_failed_continue">无法检查删除冲突（%1$s）。仍要继续同步吗？可能按本地删除记录静默删除目标云上的项。</string>
+    <string name="sync_continue_anyway">仍继续同步</string>
 </resources>

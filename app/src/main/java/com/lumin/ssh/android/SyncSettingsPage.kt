@@ -1,6 +1,7 @@
 package com.lumin.ssh.android
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -13,12 +14,14 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CompletableDeferred
@@ -72,6 +76,14 @@ fun SyncSettingsPage(
     var syncing by remember { mutableStateOf(false) }
     var restoring by remember { mutableStateOf(false) }
     var passwordChanging by remember { mutableStateOf(false) }
+    var pruningTombstones by remember { mutableStateOf(false) }
+    var pendingSyncDeletePreview by remember { mutableStateOf<SyncHelper.TombstoneConflictPreview?>(null) }
+    var pendingSyncDeleteContinue by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingPreviewFailedMessage by remember { mutableStateOf<String?>(null) }
+    var pendingPreviewFailedContinue by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingPreviewFailedCancel by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var tombstoneDays by remember { mutableStateOf(30) }
+    var tombstoneStats by remember { mutableStateOf(store.loadTombstoneStats()) }
     val recoveryPassword = store.loadRecoveryPassword()
     var recoveryPasswordDraft by remember { mutableStateOf("") }
     var showRecoveryPasswordDialog by remember { mutableStateOf(false) }
@@ -320,25 +332,131 @@ fun SyncSettingsPage(
                     Text(stringResource(R.string.last_sync_time, formatSyncTime(lastSync)), style = MaterialTheme.typography.bodySmall, color = LuminColors.Accent)
                 }
 
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    color = LuminColors.Warning.copy(alpha = 0.10f),
+                    border = BorderStroke(1.dp, LuminColors.Warning.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            stringResource(R.string.deletion_records, tombstoneStats.first, tombstoneStats.second),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = LuminColors.Warning,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            stringResource(R.string.deletion_records_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (tombstoneStats.first + tombstoneStats.second > 0) {
+                            Text(stringResource(R.string.clear_older_than), style = MaterialTheme.typography.bodySmall)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(7, 30, 90, 180, 0).forEach { d ->
+                                    FilterChip(
+                                        selected = tombstoneDays == d,
+                                        onClick = { tombstoneDays = d },
+                                        enabled = !syncBusy && !syncing && !restoring && !passwordChanging && !pruningTombstones,
+                                        label = { Text(if (d == 0) stringResource(R.string.all) else stringResource(R.string.days_unit, d)) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = LuminColors.Warning.copy(alpha = 0.22f),
+                                            selectedLabelColor = LuminColors.Warning,
+                                        ),
+                                    )
+                                }
+                            }
+                            LuminDangerButton(
+                                enabled = !syncBusy && !syncing && !restoring && !passwordChanging && !pruningTombstones,
+                                onClick = {
+                                    pruningTombstones = true
+                                    scope.launch {
+                                        try {
+                                            val (removedConn, removedCred, _) = withContext(Dispatchers.IO) {
+                                                SyncHelper.pruneSyncTombstones(
+                                                    store,
+                                                    tombstoneDays,
+                                                    connections,
+                                                    credentials,
+                                                    quickCommandsRaw,
+                                                    proxyNodes,
+                                                    aiProvidersRaw,
+                                                    aiGlobalSettingsRaw,
+                                                    trustInteraction,
+                                                )
+                                            }
+                                            tombstoneStats = store.loadTombstoneStats()
+                                            val removed = removedConn + removedCred
+                                            onMessage(
+                                                if (removed <= 0) context.getString(R.string.no_deletion_records)
+                                                else context.getString(R.string.deletion_records_cleared, removed),
+                                            )
+                                        } catch (e: Exception) {
+                                            onMessage(context.getString(R.string.clear_deletion_records_failed, context.userErrorText(e)))
+                                        } finally {
+                                            pruningTombstones = false
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(if (pruningTombstones) stringResource(R.string.syncing) else stringResource(R.string.clear_deletion_records))
+                            }
+                        }
+                    }
+                }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     LuminPrimaryButton(
                         enabled = !syncBusy && !syncing && !restoring && !passwordChanging,
                         onClick = {
                             syncing = true
                             scope.launch {
-                                val outcome = onSync(
-                                    { SyncHelper.autoSync(store, connections, credentials, quickCommandsRaw, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, trustInteraction) },
-                                    { password -> SyncHelper.syncWithRecoveryPassword(store, password, connections, credentials, quickCommandsRaw, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, trustInteraction) },
-                                )
-                                syncing = false
-                                if (outcome?.failure != null) {
-                                    onMessage(context.getString(R.string.sync_failed, context.userErrorText(outcome.failure)))
-                                } else if (outcome?.action == "skip") {
-                                    onSynced(outcome.mergedConnections, outcome.mergedCredentials, outcome.mergedQuickCommands, outcome.mergedProxyNodes, outcome.aiProvidersRaw, outcome.aiGlobalSettingsRaw)
-                                    onMessage(context.getString(R.string.sync_already_current))
-                                } else if (outcome != null) {
-                                    onSynced(outcome.mergedConnections, outcome.mergedCredentials, outcome.mergedQuickCommands, outcome.mergedProxyNodes, outcome.aiProvidersRaw, outcome.aiGlobalSettingsRaw)
-                                    onMessage(context.getString(R.string.sync_completed, outcome.action))
+                                suspend fun runMergeSync() {
+                                    val outcome = onSync(
+                                        { SyncHelper.autoSync(store, connections, credentials, quickCommandsRaw, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, trustInteraction) },
+                                        { password -> SyncHelper.syncWithRecoveryPassword(store, password, connections, credentials, quickCommandsRaw, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, trustInteraction) },
+                                    )
+                                    syncing = false
+                                    if (outcome?.failure != null) {
+                                        onMessage(context.getString(R.string.sync_failed, context.userErrorText(outcome.failure)))
+                                    } else if (outcome?.action == "skip") {
+                                        onSynced(outcome.mergedConnections, outcome.mergedCredentials, outcome.mergedQuickCommands, outcome.mergedProxyNodes, outcome.aiProvidersRaw, outcome.aiGlobalSettingsRaw)
+                                        tombstoneStats = store.loadTombstoneStats()
+                                        onMessage(context.getString(R.string.sync_already_current))
+                                    } else if (outcome != null) {
+                                        onSynced(outcome.mergedConnections, outcome.mergedCredentials, outcome.mergedQuickCommands, outcome.mergedProxyNodes, outcome.aiProvidersRaw, outcome.aiGlobalSettingsRaw)
+                                        tombstoneStats = store.loadTombstoneStats()
+                                        onMessage(context.getString(R.string.sync_completed, outcome.action))
+                                    }
+                                }
+                                // 先读目标云，再决定是否应用本地删除墓碑
+                                val previewResult = runCatching {
+                                    SyncHelper.previewTombstoneConflicts(store, trustInteraction)
+                                }
+                                val preview = previewResult.getOrNull()
+                                val previewErr = previewResult.exceptionOrNull()
+                                if (previewErr != null) {
+                                    syncing = false
+                                    val go = kotlinx.coroutines.CompletableDeferred<Boolean>()
+                                    pendingPreviewFailedContinue = { go.complete(true) }
+                                    pendingPreviewFailedCancel = { go.complete(false) }
+                                    pendingPreviewFailedMessage = context.getString(
+                                        R.string.sync_preview_failed_continue,
+                                        context.userErrorText(previewErr),
+                                    )
+                                    if (!go.await()) return@launch
+                                    syncing = true
+                                    runMergeSync()
+                                } else if (preview != null && preview.hasConflicts) {
+                                    syncing = false
+                                    pendingSyncDeleteContinue = {
+                                        syncing = true
+                                        scope.launch { runMergeSync() }
+                                    }
+                                    pendingSyncDeletePreview = preview
+                                } else {
+                                    runMergeSync()
                                 }
                             }
                         }
@@ -359,6 +477,87 @@ fun SyncSettingsPage(
                 }
             }
         }
+    }
+
+    pendingPreviewFailedMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingPreviewFailedCancel?.invoke()
+                pendingPreviewFailedMessage = null
+                pendingPreviewFailedContinue = null
+                pendingPreviewFailedCancel = null
+            },
+            title = { Text(stringResource(R.string.sync_delete_confirm_title)) },
+            text = { Text(msg) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val cont = pendingPreviewFailedContinue
+                    pendingPreviewFailedMessage = null
+                    pendingPreviewFailedContinue = null
+                    pendingPreviewFailedCancel = null
+                    cont?.invoke()
+                }) { Text(stringResource(R.string.sync_continue_anyway)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingPreviewFailedCancel?.invoke()
+                    pendingPreviewFailedMessage = null
+                    pendingPreviewFailedContinue = null
+                    pendingPreviewFailedCancel = null
+                }) { Text(stringResource(R.string.cancel)) }
+            },
+        )
+    }
+
+    pendingSyncDeletePreview?.let { preview ->
+        val connNames = preview.wouldDeleteConnections.map { it.name.ifBlank { it.id } }
+        val credNames = preview.wouldDeleteCredentials.map { it.name.ifBlank { it.id } }
+        val parts = buildList {
+            if (connNames.isNotEmpty()) {
+                add(context.getString(R.string.sync_conflict_servers, connNames.take(8).joinToString("、") + if (connNames.size > 8) "…" else ""))
+            }
+            if (credNames.isNotEmpty()) {
+                add(context.getString(R.string.sync_conflict_credentials, credNames.take(8).joinToString("、") + if (credNames.size > 8) "…" else ""))
+            }
+        }
+        AlertDialog(
+            onDismissRequest = {
+                pendingSyncDeletePreview = null
+                pendingSyncDeleteContinue = null
+            },
+            title = { Text(stringResource(R.string.sync_delete_confirm_title)) },
+            text = { Text(stringResource(R.string.sync_delete_confirm_body, parts.joinToString("\n"))) },
+            confirmButton = {
+                // 主按钮：保留并合并（清墓碑后再同步）
+                TextButton(onClick = {
+                    SyncHelper.clearTombstoneConflicts(
+                        store,
+                        preview.wouldDeleteConnections.map { it.id },
+                        preview.wouldDeleteCredentials.map { it.id },
+                    )
+                    tombstoneStats = store.loadTombstoneStats()
+                    val cont = pendingSyncDeleteContinue
+                    pendingSyncDeletePreview = null
+                    pendingSyncDeleteContinue = null
+                    cont?.invoke()
+                }) { Text(stringResource(R.string.sync_keep_cloud_items)) }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        // 删除：保持墓碑，直接同步
+                        val cont = pendingSyncDeleteContinue
+                        pendingSyncDeletePreview = null
+                        pendingSyncDeleteContinue = null
+                        cont?.invoke()
+                    }) { Text(stringResource(R.string.sync_apply_deletions)) }
+                    TextButton(onClick = {
+                        pendingSyncDeletePreview = null
+                        pendingSyncDeleteContinue = null
+                    }) { Text(stringResource(R.string.cancel)) }
+                }
+            },
+        )
     }
 
     pendingHostKey?.let { (info, result) ->

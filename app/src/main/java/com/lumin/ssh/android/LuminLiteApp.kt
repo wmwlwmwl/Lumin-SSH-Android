@@ -170,19 +170,26 @@ fun LuminLiteApp(
     }
     fun triggerAutoSync(quickCommandsOverride: String = quickCommandsRaw) {
         if (store.loadAutoSyncEnabled()) {
-            val conns = connections
-            val creds = credentials
-            val quick = quickCommandsOverride
-            val proxies = proxyNodes
-            val aiProviders = aiProvidersRaw
-            val aiGlobalSettings = aiGlobalSettingsRaw
+            // 必须从磁盘读最新列表/墓碑；内存快照可能落后于刚写的删除
+            val conns = store.loadConnections()
+            val creds = store.loadCredentials()
+            val quick = quickCommandsOverride.ifBlank { store.loadQuickCommandsRaw() }
+            val proxies = store.loadProxyNodes()
+            val aiProviders = store.loadAiProvidersRaw()
+            val aiGlobalSettings = store.loadAiGlobalSettingsRaw()
             scope.launch {
                 delay(250)
                 val outcome = syncWithPasswordPrompt(
                     sync = { SyncHelper.autoSync(store, conns, creds, quick, proxies, aiProviders, aiGlobalSettings) },
                     retry = { password -> SyncHelper.syncWithRecoveryPassword(store, password, conns, creds, quick, proxies, aiProviders, aiGlobalSettings) },
                 )
-                outcome?.let { applySyncOutcome(it, quick) }
+                outcome?.let {
+                    if (it.needsManualTombstoneConfirm) {
+                        message = context.getString(R.string.sync_tombstone_needs_manual)
+                    } else {
+                        applySyncOutcome(it, quick)
+                    }
+                }
                 reportAutomaticSyncFailure(outcome)
             }
         }
@@ -632,6 +639,7 @@ fun LuminLiteApp(
             onConfirm = {
                 connections = connections.filterNot { it.id == conn.id }
                 store.saveConnections(connections)
+                store.addConnectionTombstones(listOf(conn.id))
                 pendingDeleteConnection = null
                 message = context.getString(R.string.deleted_server, conn.name)
                 triggerAutoSync()
@@ -647,6 +655,7 @@ fun LuminLiteApp(
             onConfirm = {
                 credentials = credentials.filterNot { it.id == credential.id }
                 store.saveCredentials(credentials)
+                store.addCredentialTombstones(listOf(credential.id))
                 connections = connections.map { if (it.credentialId == credential.id) it.copy(credentialId = "", lastModified = System.currentTimeMillis()) else it }
                 store.saveConnections(connections)
                 pendingDeleteCredential = null

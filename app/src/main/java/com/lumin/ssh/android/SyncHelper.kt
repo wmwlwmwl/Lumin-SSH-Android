@@ -15,7 +15,7 @@ interface SyncProvider {
         val name = listBackupNames().maxOrNull() ?: throw NoBackupException()
         return restoreSnapshot(name, recoveryPassword)
     }
-    fun backupConnections(connections: List<Connection>, credentials: List<Credential>, quickCommands: String, proxyNodes: List<ProxyNode>, aiProvidersRaw: String, aiGlobalSettingsRaw: String, snapshotTime: Long, maxBackups: Int, recoveryPassword: String = ""): String
+    fun backupConnections(connections: List<Connection>, credentials: List<Credential>, quickCommands: String, proxyNodes: List<ProxyNode>, aiProvidersRaw: String, aiGlobalSettingsRaw: String, snapshotTime: Long, maxBackups: Int, recoveryPassword: String = "", deletedConnections: List<SyncTombstone> = emptyList(), deletedCredentials: List<SyncTombstone> = emptyList(), tombstonePrunedBefore: Long = 0): String
 }
 
 data class SyncTrustInteraction(
@@ -79,70 +79,214 @@ object SyncHelper {
         val aiProvidersRaw: String = "",
         val aiGlobalSettingsRaw: String = "",
         val failure: Throwable? = null,
+        /** AutoSync 首次接触后端且墓碑会静默删远端项时跳过，需用户手动合并确认 */
+        val needsManualTombstoneConfirm: Boolean = false,
+        val skipProvider: String = "",
     ) {
         val error: String? get() = failure?.message
     }
 
-    fun mergeConnections(local: List<Connection>, remote: List<Connection>, lastSyncTime: Long): List<Connection> {
+    private fun remoteHasTombstoneConflicts(
+        remote: SyncSnapshot?,
+        connTombs: List<SyncTombstone>,
+        credTombs: List<SyncTombstone>,
+    ): Boolean {
+        if (remote == null) return false
+        val connMap = tombstoneMap(connTombs)
+        val credMap = tombstoneMap(credTombs)
+        if (connMap.isEmpty() && credMap.isEmpty()) return false
+        for (rc in remote.connections) {
+            val at = connMap[rc.id] ?: continue
+            if (at >= rc.lastModified) return true
+        }
+        for (rc in remote.credentials) {
+            val at = credMap[rc.id] ?: continue
+            if (at >= rc.lastModified) return true
+        }
+        return false
+    }
+
+    private fun shouldSkipAutoSyncForTombstoneConflict(
+        store: LocalStore,
+        provider: String,
+        remote: SyncSnapshot?,
+        localConnTombs: List<SyncTombstone>,
+        localCredTombs: List<SyncTombstone>,
+    ): Boolean {
+        if (store.loadLastSyncTime(provider) != 0L) return false
+        return remoteHasTombstoneConflicts(remote, localConnTombs, localCredTombs)
+    }
+
+    data class ConnectionMergeResult(
+        val connections: List<Connection>,
+        val dedupTombs: List<SyncTombstone> = emptyList(),
+    )
+
+    private fun shouldDrop(id: String, lastModified: Long, deleted: Map<String, Long>): Boolean {
+        val at = deleted[id] ?: return false
+        // 墓碑时间 >= 节点时间即删除；相等时也算删除，避免同毫秒/整表 touch 后复活
+        return at >= lastModified
+    }
+
+    private fun dedupTombstoneAt(a: Long, b: Long): Long {
+        val maxLm = maxOf(a, b)
+        val now = System.currentTimeMillis()
+        return if (now <= maxLm) maxLm + 1 else now
+    }
+
+    // 启发式删除（单侧独有且 LM<=lastSync）必须落墓碑，否则会上传「人没了、墓碑也空」的包，对端又复活。
+    private fun inferredDeleteTombstoneAt(lastModified: Long, lastSyncTime: Long): Long {
+        val floor = maxOf(lastModified, lastSyncTime)
+        val now = System.currentTimeMillis()
+        return if (now <= floor) floor + 1 else now
+    }
+
+    data class CredentialMergeResult(
+        val credentials: List<Credential>,
+        val inferredTombs: List<SyncTombstone> = emptyList(),
+    )
+
+    fun mergeConnections(
+        local: List<Connection>,
+        remote: List<Connection>,
+        lastSyncTime: Long,
+        vararg tombstones: List<SyncTombstone>,
+    ): ConnectionMergeResult {
+        var deleted = emptyMap<String, Long>()
+        for (list in tombstones) deleted = mergeTombstoneMaps(deleted, tombstoneMap(list))
         val remoteMap = remote.associateBy { it.id }
         val merged = mutableListOf<Connection>()
         val added = mutableSetOf<String>()
+        val inferredTombs = mutableListOf<SyncTombstone>()
+        fun noteInferredDelete(id: String, lm: Long) {
+            val key = id.trim()
+            if (key.isBlank()) return
+            val at = inferredDeleteTombstoneAt(lm, lastSyncTime)
+            val prev = deleted[key]
+            if (prev != null && prev >= at) return
+            deleted = deleted + (key to at)
+            inferredTombs += SyncTombstone(key, at)
+        }
 
         for (lc in local) {
             if (lc.id in added) continue
             val rc = remoteMap[lc.id]
             if (rc != null) {
-                merged += if (lc.lastModified >= rc.lastModified) lc else rc
-            } else {
-                if (lc.lastModified > lastSyncTime) merged += lc
+                val chosen = if (rc.lastModified > lc.lastModified) rc else lc
+                if (!shouldDrop(chosen.id, chosen.lastModified, deleted)) merged += chosen
+            } else if (lc.lastModified > lastSyncTime && !shouldDrop(lc.id, lc.lastModified, deleted)) {
+                merged += lc
+            } else if (!shouldDrop(lc.id, lc.lastModified, deleted)) {
+                noteInferredDelete(lc.id, lc.lastModified)
             }
             added += lc.id
         }
         for (rc in remote) {
-            if (rc.id !in added && rc.lastModified > lastSyncTime) {
-                merged += rc
+            if (rc.id !in added) {
+                if (rc.lastModified > lastSyncTime && !shouldDrop(rc.id, rc.lastModified, deleted)) {
+                    merged += rc
+                } else if (!shouldDrop(rc.id, rc.lastModified, deleted)) {
+                    noteInferredDelete(rc.id, rc.lastModified)
+                }
                 added += rc.id
             }
         }
 
         val hostPortMap = mutableMapOf<Triple<String, Int, String>, Int>()
         val deduped = mutableListOf<Connection>()
+        val dedupTombs = mutableListOf<SyncTombstone>()
         for (conn in merged) {
             val key = Triple(conn.host, conn.port, conn.username)
             val idx = hostPortMap[key]
             if (idx != null) {
-                if (conn.lastModified > deduped[idx].lastModified) deduped[idx] = conn
+                val kept = deduped[idx]
+                if (conn.lastModified > kept.lastModified) {
+                    if (kept.id.isNotBlank() && kept.id != conn.id) {
+                        dedupTombs += SyncTombstone(kept.id, dedupTombstoneAt(kept.lastModified, conn.lastModified))
+                    }
+                    deduped[idx] = conn
+                } else if (conn.id.isNotBlank() && conn.id != kept.id) {
+                    dedupTombs += SyncTombstone(conn.id, dedupTombstoneAt(conn.lastModified, kept.lastModified))
+                }
             } else {
                 hostPortMap[key] = deduped.size
                 deduped += conn
             }
         }
-        return deduped
+        return ConnectionMergeResult(deduped, mergeTombstoneLists(inferredTombs, dedupTombs))
     }
 
-    fun mergeCredentials(local: List<Credential>, remote: List<Credential>, lastSyncTime: Long): List<Credential> {
+    fun mergeCredentials(
+        local: List<Credential>,
+        remote: List<Credential>,
+        lastSyncTime: Long,
+        vararg tombstones: List<SyncTombstone>,
+    ): CredentialMergeResult {
+        var deleted = emptyMap<String, Long>()
+        for (list in tombstones) deleted = mergeTombstoneMaps(deleted, tombstoneMap(list))
         val remoteMap = remote.associateBy { it.id }
         val merged = mutableListOf<Credential>()
         val added = mutableSetOf<String>()
+        val inferredTombs = mutableListOf<SyncTombstone>()
+        fun noteInferredDelete(id: String, lm: Long) {
+            val key = id.trim()
+            if (key.isBlank()) return
+            val at = inferredDeleteTombstoneAt(lm, lastSyncTime)
+            val prev = deleted[key]
+            if (prev != null && prev >= at) return
+            deleted = deleted + (key to at)
+            inferredTombs += SyncTombstone(key, at)
+        }
 
         for (lc in local) {
             if (lc.id in added) continue
             val rc = remoteMap[lc.id]
             if (rc != null) {
-                merged += if (lc.lastModified >= rc.lastModified) lc else rc
-            } else {
-                if (lc.lastModified > lastSyncTime) merged += lc
+                val chosen = if (rc.lastModified > lc.lastModified) rc else lc
+                if (!shouldDrop(chosen.id, chosen.lastModified, deleted)) merged += chosen
+            } else if (lc.lastModified > lastSyncTime && !shouldDrop(lc.id, lc.lastModified, deleted)) {
+                merged += lc
+            } else if (!shouldDrop(lc.id, lc.lastModified, deleted)) {
+                noteInferredDelete(lc.id, lc.lastModified)
             }
             added += lc.id
         }
         for (rc in remote) {
-            if (rc.id !in added && rc.lastModified > lastSyncTime) {
-                merged += rc
+            if (rc.id !in added) {
+                if (rc.lastModified > lastSyncTime && !shouldDrop(rc.id, rc.lastModified, deleted)) {
+                    merged += rc
+                } else if (!shouldDrop(rc.id, rc.lastModified, deleted)) {
+                    noteInferredDelete(rc.id, rc.lastModified)
+                }
                 added += rc.id
             }
         }
-        return merged
+        return CredentialMergeResult(merged, mergeTombstoneLists(emptyList(), inferredTombs))
     }
+
+    fun pruneConnectionTombstones(tombs: List<SyncTombstone>, conns: List<Connection>): List<SyncTombstone> {
+        val alive = conns.associate { it.id to it.lastModified }
+        val map = tombstoneMap(tombs).toMutableMap()
+        for ((id, at) in map.toList()) {
+            val lm = alive[id]
+            // 仅节点严格新于删除时间才清墓碑
+            if (lm != null && lm > at) map.remove(id)
+        }
+        return tombstonesFromMap(map)
+    }
+
+    fun pruneCredentialTombstones(tombs: List<SyncTombstone>, creds: List<Credential>): List<SyncTombstone> {
+        val alive = creds.associate { it.id to it.lastModified }
+        val map = tombstoneMap(tombs).toMutableMap()
+        for ((id, at) in map.toList()) {
+            val lm = alive[id]
+            if (lm != null && lm > at) map.remove(id)
+        }
+        return tombstonesFromMap(map)
+    }
+
+    fun tombstonesEqual(a: List<SyncTombstone>, b: List<SyncTombstone>): Boolean =
+        tombstoneMap(a) == tombstoneMap(b)
 
     fun mergeProxyNodes(local: List<ProxyNode>, remote: List<ProxyNode>, lastSyncTime: Long): List<ProxyNode> {
         val remoteMap = remote.associateBy { it.id }
@@ -369,12 +513,6 @@ object SyncHelper {
         return latest == null || contains(latest)
     }
 
-    private fun filterRemoteDeletedConnections(items: List<Connection>, snapshots: List<SyncSnapshot>): List<Connection> =
-        items.filter { item -> latestSnapshotHasItem(item.lastModified, snapshots) { snap -> snap.connections.any { it.id == item.id } } }
-
-    private fun filterRemoteDeletedCredentials(items: List<Credential>, snapshots: List<SyncSnapshot>): List<Credential> =
-        items.filter { item -> latestSnapshotHasItem(item.lastModified, snapshots) { snap -> snap.credentials.any { it.id == item.id } } }
-
     private fun filterRemoteDeletedProxyNodes(items: List<ProxyNode>, snapshots: List<SyncSnapshot>): List<ProxyNode> =
         items.filter { item -> latestSnapshotHasItem(item.updatedAt, snapshots) { snap -> snap.proxyNodes.any { it.id == item.id } } }
 
@@ -439,22 +577,58 @@ object SyncHelper {
     internal fun planSync(local: SyncSnapshot, remotes: List<SyncSnapshot?>, lastSyncTime: Long, syncTime: Long): SyncPlan {
         val snapshots = remotes.filterNotNull()
         val remote = snapshots.fold(SyncSnapshot(emptyList(), emptyList())) { merged, snapshot -> mergeSnapshotUnion(merged, listOf(snapshot)) }
-        val merged = if (snapshots.isEmpty()) local else SyncSnapshot(
-            connections = mergeConnections(local.connections, remote.connections, lastSyncTime),
-            credentials = mergeCredentials(local.credentials, remote.credentials, lastSyncTime),
+        val remotePrunedBefore = snapshots.maxOfOrNull { it.tombstonePrunedBefore } ?: remote.tombstonePrunedBefore
+        val (baseConnTombs, baseCredTombs, mergedPrunedBefore) = mergeTombsWithPruneWatermark(
+            local.deletedConnections, remote.deletedConnections,
+            local.deletedCredentials, remote.deletedCredentials,
+            local.tombstonePrunedBefore, remotePrunedBefore,
+        )
+        val connMerge = if (snapshots.isEmpty()) {
+            mergeConnections(local.connections, emptyList(), lastSyncTime, baseConnTombs)
+        } else {
+            mergeConnections(local.connections, remote.connections, lastSyncTime, baseConnTombs)
+        }
+        val mergedConnTombs = pruneConnectionTombstones(
+            filterTombstonesNotBefore(mergeTombstoneLists(baseConnTombs, connMerge.dedupTombs), mergedPrunedBefore),
+            connMerge.connections,
+        )
+        val credMerge = if (snapshots.isEmpty()) {
+            mergeCredentials(local.credentials, emptyList(), lastSyncTime, baseCredTombs)
+        } else {
+            mergeCredentials(local.credentials, remote.credentials, lastSyncTime, baseCredTombs)
+        }
+        val mergedCreds = credMerge.credentials
+        val mergedCredTombs = pruneCredentialTombstones(
+            filterTombstonesNotBefore(mergeTombstoneLists(baseCredTombs, credMerge.inferredTombs), mergedPrunedBefore),
+            mergedCreds,
+        )
+        var merged = if (snapshots.isEmpty()) local.copy(
+            connections = connMerge.connections,
+            credentials = mergedCreds,
+            deletedConnections = mergedConnTombs,
+            deletedCredentials = mergedCredTombs,
+            tombstonePrunedBefore = mergedPrunedBefore,
+        ) else SyncSnapshot(
+            connections = connMerge.connections,
+            credentials = mergedCreds,
             proxyNodes = mergeProxyNodes(local.proxyNodes, remote.proxyNodes, lastSyncTime),
             quickCommands = mergeQuickCommands(local.quickCommands, remote.quickCommands, lastSyncTime),
             aiProvidersRaw = mergeRawByUpdatedAt(local.aiProvidersRaw, remote.aiProvidersRaw, lastSyncTime),
             aiGlobalSettingsRaw = mergeRawObjectByUpdatedAt(local.aiGlobalSettingsRaw, remote.aiGlobalSettingsRaw),
+            deletedConnections = mergedConnTombs,
+            deletedCredentials = mergedCredTombs,
+            tombstonePrunedBefore = mergedPrunedBefore,
             snapshotTime = maxOf(local.snapshotTime, remote.snapshotTime),
         )
-        val final = merged.copy(
-            connections = filterRemoteDeletedConnections(merged.connections, snapshots),
-            credentials = filterRemoteDeletedCredentials(merged.credentials, snapshots),
-            proxyNodes = filterRemoteDeletedProxyNodes(merged.proxyNodes, snapshots),
-            quickCommands = filterRemoteDeletedQuickCommands(merged.quickCommands, snapshots),
-            aiProvidersRaw = filterRemoteDeletedRawByUpdatedAt(merged.aiProvidersRaw, snapshots) { it.aiProvidersRaw },
-        )
+        // 连接/凭据删除只信墓碑；快捷命令/AI/代理仍用旧 snapshot_time 启发式
+        if (snapshots.isNotEmpty()) {
+            merged = merged.copy(
+                proxyNodes = filterRemoteDeletedProxyNodes(merged.proxyNodes, snapshots),
+                quickCommands = filterRemoteDeletedQuickCommands(merged.quickCommands, snapshots),
+                aiProvidersRaw = filterRemoteDeletedRawByUpdatedAt(merged.aiProvidersRaw, snapshots) { it.aiProvidersRaw },
+            )
+        }
+        val final = merged
         val uploadIndexes = remotes.indices.filterTo(linkedSetOf()) { remotes[it]?.let { remoteSnapshot -> !snapshotBusinessEqual(final, remoteSnapshot) } ?: true }
         val localChanged = !snapshotBusinessEqual(final, local)
         val cloudChanged = uploadIndexes.isNotEmpty()
@@ -473,7 +647,10 @@ object SyncHelper {
             a.proxyNodes.associateBy { it.id } == b.proxyNodes.associateBy { it.id } &&
             jsonArrayEqual(a.quickCommands, b.quickCommands, ordered = true) &&
             jsonArrayEqual(a.aiProvidersRaw, b.aiProvidersRaw, ordered = false) &&
-            jsonObjectEqual(a.aiGlobalSettingsRaw, b.aiGlobalSettingsRaw)
+            jsonObjectEqual(a.aiGlobalSettingsRaw, b.aiGlobalSettingsRaw) &&
+            tombstonesEqual(a.deletedConnections, b.deletedConnections) &&
+            tombstonesEqual(a.deletedCredentials, b.deletedCredentials) &&
+            a.tombstonePrunedBefore == b.tombstonePrunedBefore
 
     private fun jsonArrayEqual(aRaw: String, bRaw: String, ordered: Boolean): Boolean {
         val a = if (aRaw.isBlank()) JSONArray() else runCatching { JSONArray(aRaw) }.getOrNull() ?: return aRaw == bRaw
@@ -604,9 +781,29 @@ object SyncHelper {
         } catch (failure: Throwable) {
             return SyncOutcome("error", connections, credentials, quickCommandsRaw, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, failure)
         }
-        val local = SyncSnapshot(connections, credentials, proxyNodes, quickCommandsRaw, aiProvidersRaw, aiGlobalSettingsRaw, store.loadSnapshotTime())
+        val tombStore = store.loadTombstoneStore()
+        val localConnTombs = filterTombstonesNotBefore(tombStore.connections, tombStore.prunedBefore)
+        val localCredTombs = filterTombstonesNotBefore(tombStore.credentials, tombStore.prunedBefore)
+        // AutoSync 首次接触某后端且墓碑会静默删远端：跳过，请用户手动合并确认
+        if (!saveCandidatePassword) {
+            for ((idx, providerName) in providers.withIndex()) {
+                val remote = remotes.getOrNull(idx)
+                if (shouldSkipAutoSyncForTombstoneConflict(store, providerName, remote, localConnTombs, localCredTombs)) {
+                    return SyncOutcome(
+                        "skip", connections, credentials, quickCommandsRaw, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw,
+                        needsManualTombstoneConfirm = true,
+                        skipProvider = providerName,
+                    )
+                }
+            }
+        }
+        val local = SyncSnapshot(
+            connections, credentials, proxyNodes, quickCommandsRaw, aiProvidersRaw, aiGlobalSettingsRaw,
+            localConnTombs, localCredTombs, tombStore.prunedBefore, store.loadSnapshotTime(),
+        )
         val syncTime = System.currentTimeMillis()
-        val plan = planSync(local, remotes, store.loadLastSyncTime(), syncTime)
+        val lastSyncTime = store.loadLastSyncTimeMin(providers)
+        val plan = planSync(local, remotes, lastSyncTime, syncTime)
         val uploaded = mutableListOf<Triple<SyncProvider, String, Int>>()
         try {
             plan.uploadIndexes.forEach { index ->
@@ -614,6 +811,7 @@ object SyncHelper {
                 uploaded += Triple(instance, uploadSnapshot(instance, plan.snapshot, recoveryPassword), maxBackups)
             }
             check(store.saveSnapshot(plan.snapshot, syncTime)) { "本地同步快照保存失败" }
+            store.saveLastSyncTimes(providers, syncTime)
             if (saveCandidatePassword) store.saveRecoveryPassword(recoveryPassword)
         } catch (failure: Throwable) {
             uploaded.forEach { (instance, name, _) -> runCatching { instance.deleteBackup(name) } }
@@ -638,7 +836,7 @@ object SyncHelper {
         recoveryPassword: String,
         saveCandidatePassword: Boolean,
     ): SyncOutcome = withContext(Dispatchers.IO) {
-        val lastSyncTime = store.loadLastSyncTime()
+        val lastSyncTime = store.loadLastSyncTime(provider)
         val (instance, maxBackups) = try {
             providerInstance(store, provider, trustInteraction)
         } catch (failure: Throwable) {
@@ -652,13 +850,28 @@ object SyncHelper {
             return@withContext SyncOutcome("error", connections, credentials, quickCommandsRaw, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, failure)
         }
 
-        val local = SyncSnapshot(connections, credentials, proxyNodes, quickCommandsRaw, aiProvidersRaw, aiGlobalSettingsRaw, store.loadSnapshotTime())
+        val tombStore = store.loadTombstoneStore()
+        val localConnTombs = filterTombstonesNotBefore(tombStore.connections, tombStore.prunedBefore)
+        val localCredTombs = filterTombstonesNotBefore(tombStore.credentials, tombStore.prunedBefore)
+        // AutoSync 首次接触该后端且墓碑会静默删远端：跳过，请用户手动合并确认
+        if (!saveCandidatePassword && shouldSkipAutoSyncForTombstoneConflict(store, provider, remoteSnap, localConnTombs, localCredTombs)) {
+            return@withContext SyncOutcome(
+                "skip", connections, credentials, quickCommandsRaw, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw,
+                needsManualTombstoneConfirm = true,
+                skipProvider = provider,
+            )
+        }
+        val local = SyncSnapshot(
+            connections, credentials, proxyNodes, quickCommandsRaw, aiProvidersRaw, aiGlobalSettingsRaw,
+            localConnTombs, localCredTombs, tombStore.prunedBefore, store.loadSnapshotTime(),
+        )
         val syncTime = System.currentTimeMillis()
         val plan = planSync(local, listOf(remoteSnap), lastSyncTime, syncTime)
         var uploadedName: String? = null
         try {
             if (plan.uploadIndexes.isNotEmpty()) uploadedName = uploadSnapshot(instance, plan.snapshot, recoveryPassword)
-            check(store.saveSnapshot(plan.snapshot, syncTime)) { "本地同步快照保存失败" }
+            check(store.saveSnapshot(plan.snapshot, syncTime, provider)) { "本地同步快照保存失败" }
+            store.saveLastSyncTime(provider, syncTime)
             if (saveCandidatePassword) store.saveRecoveryPassword(recoveryPassword)
         } catch (failure: Throwable) {
             uploadedName?.let { runCatching { instance.deleteBackup(it) } }
@@ -682,7 +895,9 @@ object SyncHelper {
         trustInteraction: SyncTrustInteraction? = null,
     ): SyncSnapshot = withSyncLock {
         val normalizedPassword = normalizeRecoveryPassword(password)
-        val targets = allConfiguredProvidersFor(store).map { providerInstance(store, it, trustInteraction).first }
+        // 只动当前同步模式对应后端，避免未选用的 FTP 坏包卡死关加密
+        val targetNames = providersFor(store)
+        val targets = targetNames.map { providerInstance(store, it, trustInteraction).first }
         val oldPassword = store.loadRecoveryPassword()
         val remoteSnapshots = targets.mapNotNull { instance ->
             try {
@@ -695,11 +910,20 @@ object SyncHelper {
                 } catch (_: RecoveryPasswordException) {
                     throw RecoveryPasswordResetRequiredException()
                 }
+            } catch (failure: Throwable) {
+                if (isUnreadableBackupContentError(failure)) null else throw failure
             }
         }
-        val localSnapshot = SyncSnapshot(connections, credentials, proxyNodes, quickCommandsRaw, aiProvidersRaw, aiGlobalSettingsRaw, store.loadSnapshotTime())
+        val tombStore = store.loadTombstoneStore()
+        val localSnapshot = SyncSnapshot(
+            connections, credentials, proxyNodes, quickCommandsRaw, aiProvidersRaw, aiGlobalSettingsRaw,
+            filterTombstonesNotBefore(tombStore.connections, tombStore.prunedBefore),
+            filterTombstonesNotBefore(tombStore.credentials, tombStore.prunedBefore),
+            tombStore.prunedBefore,
+            store.loadSnapshotTime(),
+        )
         val mergedSnapshot = mergeSnapshotUnion(localSnapshot, remoteSnapshots).copy(snapshotTime = System.currentTimeMillis())
-        rewriteRecoveryPassword(store, targets, normalizedPassword, mergedSnapshot)
+        rewriteRecoveryPassword(store, targets, normalizedPassword, mergedSnapshot, targetNames)
     }
 
     suspend fun resetRecoveryPassword(
@@ -714,37 +938,88 @@ object SyncHelper {
         trustInteraction: SyncTrustInteraction? = null,
     ): SyncSnapshot = withSyncLock {
         val normalizedPassword = normalizeRecoveryPassword(password)
-        val snapshot = SyncSnapshot(connections, credentials, proxyNodes, quickCommandsRaw, aiProvidersRaw, aiGlobalSettingsRaw, System.currentTimeMillis())
+        val tombStore = store.loadTombstoneStore()
+        val snapshot = SyncSnapshot(
+            connections, credentials, proxyNodes, quickCommandsRaw, aiProvidersRaw, aiGlobalSettingsRaw,
+            filterTombstonesNotBefore(tombStore.connections, tombStore.prunedBefore),
+            filterTombstonesNotBefore(tombStore.credentials, tombStore.prunedBefore),
+            tombStore.prunedBefore,
+            System.currentTimeMillis(),
+        )
+        val targetNames = providersFor(store)
         rewriteRecoveryPassword(
             store,
-            allConfiguredProvidersFor(store).map { providerInstance(store, it, trustInteraction).first },
+            targetNames.map { providerInstance(store, it, trustInteraction).first },
             normalizedPassword,
             snapshot,
+            targetNames,
         )
     }
 
     internal fun normalizeRecoveryPassword(password: String): String = if (password.isBlank()) "" else password
 
     internal fun mergeSnapshotUnion(local: SyncSnapshot, remotes: List<SyncSnapshot>): SyncSnapshot = remotes.fold(local) { merged, remote ->
+        val (baseConnTombs, baseCredTombs, mergedPrunedBefore) = mergeTombsWithPruneWatermark(
+            merged.deletedConnections, remote.deletedConnections,
+            merged.deletedCredentials, remote.deletedCredentials,
+            merged.tombstonePrunedBefore, remote.tombstonePrunedBefore,
+        )
+        val connMerge = mergeConnections(merged.connections, remote.connections, -1L, baseConnTombs)
+        val conns = connMerge.connections
+        val finalConnTombs = pruneConnectionTombstones(
+            filterTombstonesNotBefore(mergeTombstoneLists(baseConnTombs, connMerge.dedupTombs), mergedPrunedBefore),
+            conns,
+        )
+        val credMerge = mergeCredentials(merged.credentials, remote.credentials, -1L, baseCredTombs)
+        val creds = credMerge.credentials
+        val finalCredTombs = pruneCredentialTombstones(
+            filterTombstonesNotBefore(mergeTombstoneLists(baseCredTombs, credMerge.inferredTombs), mergedPrunedBefore),
+            creds,
+        )
         SyncSnapshot(
-            connections = mergeConnections(merged.connections, remote.connections, -1L),
-            credentials = mergeCredentials(merged.credentials, remote.credentials, -1L),
+            connections = conns,
+            credentials = creds,
             proxyNodes = mergeProxyNodes(merged.proxyNodes, remote.proxyNodes, -1L),
             quickCommands = mergeQuickCommands(merged.quickCommands, remote.quickCommands, -1L),
             aiProvidersRaw = mergeRawByUpdatedAt(merged.aiProvidersRaw, remote.aiProvidersRaw, -1L),
             aiGlobalSettingsRaw = mergeRawObjectByUpdatedAt(merged.aiGlobalSettingsRaw, remote.aiGlobalSettingsRaw),
+            deletedConnections = finalConnTombs,
+            deletedCredentials = finalCredTombs,
+            tombstonePrunedBefore = mergedPrunedBefore,
             snapshotTime = maxOf(merged.snapshotTime, remote.snapshotTime),
         )
     }
 
-    private fun rewriteRecoveryPassword(store: LocalStore, providers: List<SyncProvider>, password: String, snapshot: SyncSnapshot): SyncSnapshot =
+    private fun rewriteRecoveryPassword(
+        store: LocalStore,
+        providers: List<SyncProvider>,
+        password: String,
+        snapshot: SyncSnapshot,
+        providerNames: List<String> = emptyList(),
+    ): SyncSnapshot =
         rewriteRecoveryPasswordTransaction(
             providers = providers,
             snapshot = snapshot,
             recoveryPassword = password,
-            saveSnapshot = { store.saveSnapshot(snapshot, System.currentTimeMillis()) },
+            saveSnapshot = {
+                val ts = System.currentTimeMillis()
+                val ok = store.saveSnapshot(snapshot, ts)
+                if (ok && providerNames.isNotEmpty()) store.saveLastSyncTimes(providerNames, ts)
+                ok
+            },
             savePassword = { store.saveRecoveryPassword(password) },
         )
+
+    private fun isUnreadableBackupContentError(err: Throwable): Boolean {
+        val msg = err.message.orEmpty()
+        return msg.contains("LUMIN2 Base64") ||
+            msg.contains("LUMIN2 数据长度不足") ||
+            msg.contains("缺少 LUMIN2") ||
+            msg.contains("不支持的 LUMIN2") ||
+            msg.contains("illegal base64", ignoreCase = true) ||
+            msg.contains("Unexpected end") ||
+            msg.contains("截断")
+    }
 
     internal fun rewriteRecoveryPasswordTransaction(
         providers: List<SyncProvider>,
@@ -785,6 +1060,7 @@ object SyncHelper {
                 uploaded += provider to provider.backupConnections(
                     snapshot.connections, snapshot.credentials, snapshot.quickCommands, snapshot.proxyNodes,
                     snapshot.aiProvidersRaw, snapshot.aiGlobalSettingsRaw, snapshot.snapshotTime, 0, recoveryPassword,
+                    snapshot.deletedConnections, snapshot.deletedCredentials, snapshot.tombstonePrunedBefore,
                 )
             }
             return uploaded.map { it.second }
@@ -817,5 +1093,135 @@ object SyncHelper {
     private fun uploadSnapshot(provider: SyncProvider, snapshot: SyncSnapshot, recoveryPassword: String): String = provider.backupConnections(
         snapshot.connections, snapshot.credentials, snapshot.quickCommands, snapshot.proxyNodes,
         snapshot.aiProvidersRaw, snapshot.aiGlobalSettingsRaw, snapshot.snapshotTime, 0, recoveryPassword,
+        snapshot.deletedConnections, snapshot.deletedCredentials, snapshot.tombstonePrunedBefore,
     )
+
+    data class TombstoneConflictItem(val id: String, val name: String, val host: String = "")
+
+    data class TombstoneConflictPreview(
+        val providers: List<String> = emptyList(),
+        val wouldDeleteConnections: List<TombstoneConflictItem> = emptyList(),
+        val wouldDeleteCredentials: List<TombstoneConflictItem> = emptyList(),
+    ) {
+        val hasConflicts: Boolean get() = wouldDeleteConnections.isNotEmpty() || wouldDeleteCredentials.isNotEmpty()
+    }
+
+    /**
+     * 合并同步前：先读目标云最新备份，列出本地墓碑将删掉的远端项。
+     * 无远端备份或无冲突时返回空列表。
+     */
+    suspend fun previewTombstoneConflicts(
+        store: LocalStore,
+        trustInteraction: SyncTrustInteraction? = null,
+    ): TombstoneConflictPreview = withContext(Dispatchers.IO) {
+        val targetNames = providersFor(store)
+        if (targetNames.isEmpty()) return@withContext TombstoneConflictPreview()
+        val tombStore = store.loadTombstoneStore()
+        val connTombs = filterTombstonesNotBefore(tombStore.connections, tombStore.prunedBefore)
+        val credTombs = filterTombstonesNotBefore(tombStore.credentials, tombStore.prunedBefore)
+        if (connTombs.isEmpty() && credTombs.isEmpty()) return@withContext TombstoneConflictPreview(providers = targetNames)
+        val connMap = tombstoneMap(connTombs)
+        val credMap = tombstoneMap(credTombs)
+        val seenConn = mutableSetOf<String>()
+        val seenCred = mutableSetOf<String>()
+        val delConns = mutableListOf<TombstoneConflictItem>()
+        val delCreds = mutableListOf<TombstoneConflictItem>()
+        val password = store.loadRecoveryPassword()
+        for (name in targetNames) {
+            val remote = try {
+                providerInstance(store, name, trustInteraction).first.restoreLatestSnapshot(password)
+            } catch (_: NoBackupException) {
+                null
+            }
+            if (remote == null) continue
+            for (rc in remote.connections) {
+                val at = connMap[rc.id] ?: continue
+                if (rc.id in seenConn) continue
+                if (at < rc.lastModified) continue
+                seenConn += rc.id
+                delConns += TombstoneConflictItem(rc.id, rc.name.ifBlank { rc.host }, rc.host)
+            }
+            for (rc in remote.credentials) {
+                val at = credMap[rc.id] ?: continue
+                if (rc.id in seenCred) continue
+                if (at < rc.lastModified) continue
+                seenCred += rc.id
+                delCreds += TombstoneConflictItem(rc.id, rc.name.ifBlank { rc.id })
+            }
+        }
+        TombstoneConflictPreview(targetNames, delConns, delCreds)
+    }
+
+    fun clearTombstoneConflicts(store: LocalStore, connectionIds: Collection<String>, credentialIds: Collection<String>) {
+        store.clearConnectionTombstones(connectionIds)
+        store.clearCredentialTombstones(credentialIds)
+    }
+
+    /**
+     * 按天数清理墓碑并上传到当前同步模式后端。
+     * days <= 0 表示清理全部。
+     * @return Triple(removedConnections, removedCredentials, uploadedCount)
+     */
+    suspend fun pruneSyncTombstones(
+        store: LocalStore,
+        days: Int,
+        connections: List<Connection>,
+        credentials: List<Credential>,
+        quickCommandsRaw: String,
+        proxyNodes: List<ProxyNode>,
+        aiProvidersRaw: String,
+        aiGlobalSettingsRaw: String,
+        trustInteraction: SyncTrustInteraction? = null,
+    ): Triple<Int, Int, Int> = withSyncLock {
+        val storeBefore = store.loadTombstoneStore()
+        val connTombs = storeBefore.connections
+        val credTombs = storeBefore.credentials
+        val clearAll = days <= 0
+        val cutoff = if (clearAll) 0L else System.currentTimeMillis() - days.toLong() * 24L * 60L * 60L * 1000L
+        fun prune(list: List<SyncTombstone>): Pair<List<SyncTombstone>, Int> {
+            if (list.isEmpty()) return emptyList<SyncTombstone>() to 0
+            if (clearAll) return emptyList<SyncTombstone>() to tombstoneMap(list).size
+            val kept = list.filter { it.deletedAt >= cutoff }
+            val removed = tombstoneMap(list).size - tombstoneMap(kept).size
+            return mergeTombstoneLists(emptyList(), kept) to removed
+        }
+        val (keptConn, removedConn) = prune(connTombs)
+        val (keptCred, removedCred) = prune(credTombs)
+        if (removedConn == 0 && removedCred == 0) return@withSyncLock Triple(0, 0, 0)
+        // 推进清理水位线：之后合并时丢弃更早的远端墓碑
+        var prunedBefore = storeBefore.prunedBefore
+        val pb = if (clearAll) {
+            val now = System.currentTimeMillis()
+            val m = maxTombstoneDeletedAt(connTombs, credTombs)
+            if (m >= now) m + 1 else now
+        } else cutoff
+        if (pb > prunedBefore) prunedBefore = pb
+        store.saveSyncTombstones(keptConn, keptCred, prunedBefore)
+        val snapshot = SyncSnapshot(
+            connections, credentials, proxyNodes, quickCommandsRaw, aiProvidersRaw, aiGlobalSettingsRaw,
+            keptConn, keptCred, prunedBefore, System.currentTimeMillis(),
+        )
+        val targetNames = providersFor(store)
+        var uploaded = 0
+        val failures = mutableListOf<String>()
+        for (name in targetNames) {
+            try {
+                val (instance, maxBackups) = providerInstance(store, name, trustInteraction)
+                uploadSnapshot(instance, snapshot, store.loadRecoveryPassword())
+                if (maxBackups > 0) runCatching { instance.pruneOldBackups(maxBackups) }
+                store.saveLastSyncTime(name, snapshot.snapshotTime)
+                uploaded++
+            } catch (e: Throwable) {
+                failures += "$name: ${e.message ?: e}"
+            }
+        }
+        check(store.saveSnapshot(snapshot, snapshot.snapshotTime)) { "本地同步快照保存失败" }
+        if (failures.isNotEmpty() && uploaded == 0) {
+            throw IllegalStateException("清理后上传失败：${failures.joinToString("; ")}")
+        }
+        if (failures.isNotEmpty()) {
+            throw IllegalStateException("已清理并上传 $uploaded 个目标，部分失败：${failures.joinToString("; ")}")
+        }
+        Triple(removedConn, removedCred, uploaded)
+    }
 }

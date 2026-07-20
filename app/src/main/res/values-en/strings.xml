@@ -377,4 +377,21 @@
     <string name="error_ftps_certificate_rejected">FTPS certificate was not accepted%1$s</string>
     <string name="error_local_save">Failed to save local data</string>
     <string name="error_sync_backend_missing">No sync backend is configured</string>
+    <string name="deletion_records">Deletion records: connections %1$d · credentials %2$d</string>
+    <string name="deletion_records_hint">Used for multi-device deletion sync. Usually no action needed.</string>
+    <string name="clear_older_than">Clear older than</string>
+    <string name="days_unit">%1$d days</string>
+    <string name="clear_deletion_records">Clear deletion records</string>
+    <string name="deletion_records_cleared">Cleared %1$d deletion records</string>
+    <string name="no_deletion_records">No deletion records to clear</string>
+    <string name="clear_deletion_records_failed">Failed to clear deletion records: %1$s</string>
+    <string name="sync_delete_confirm_title">Confirm sync deletions</string>
+    <string name="sync_delete_confirm_body">These items still exist on the target cloud. Syncing local deletion records will remove them:\n%1$s\n\nChoose: delete them, or keep them and merge with local data.</string>
+    <string name="sync_apply_deletions">Delete</string>
+    <string name="sync_keep_cloud_items">Keep and merge</string>
+    <string name="sync_conflict_servers">Servers: %1$s</string>
+    <string name="sync_conflict_credentials">Credentials: %1$s</string>
+    <string name="sync_tombstone_needs_manual">Deletion records would affect servers on the target cloud. Auto-sync was skipped. Open Sync settings and tap Merge Sync to apply or keep cloud items.</string>
+    <string name="sync_preview_failed_continue">Could not check deletion conflicts (%1$s). Continue syncing anyway? Local deletion records may silently remove items on the cloud.</string>
+    <string name="sync_continue_anyway">Continue sync</string>
 </resources>

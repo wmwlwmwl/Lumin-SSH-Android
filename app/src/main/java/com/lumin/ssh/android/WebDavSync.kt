@@ -86,9 +86,9 @@ class WebDavSync(
 
     fun restoreLatestConnections(): List<Connection> = restoreLatestSnapshot().connections
 
-    override fun backupConnections(connections: List<Connection>, credentials: List<Credential>, quickCommands: String, proxyNodes: List<ProxyNode>, aiProvidersRaw: String, aiGlobalSettingsRaw: String, snapshotTime: Long, maxBackups: Int, recoveryPassword: String): String {
+    override fun backupConnections(connections: List<Connection>, credentials: List<Credential>, quickCommands: String, proxyNodes: List<ProxyNode>, aiProvidersRaw: String, aiGlobalSettingsRaw: String, snapshotTime: Long, maxBackups: Int, recoveryPassword: String, deletedConnections: List<SyncTombstone>, deletedCredentials: List<SyncTombstone>, tombstonePrunedBefore: Long): String {
         ensureRemoteDir()
-        val snapshotJson = desktopSnapshotJson(connections, credentials, quickCommands, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, snapshotTime)
+        val snapshotJson = desktopSnapshotJson(connections, credentials, quickCommands, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, snapshotTime, deletedConnections, deletedCredentials, tombstonePrunedBefore)
         val encrypted = recoveryPassword.isNotBlank()
         val content = if (encrypted) encryptLumin2(snapshotJson, recoveryPassword) else snapshotJson
         val fileName = backupFileName(encrypted)

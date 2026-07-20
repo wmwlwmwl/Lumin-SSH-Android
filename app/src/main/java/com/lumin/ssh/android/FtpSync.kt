@@ -200,8 +200,11 @@ class FtpSync(
         snapshotTime: Long,
         maxBackups: Int,
         recoveryPassword: String,
+        deletedConnections: List<SyncTombstone>,
+        deletedCredentials: List<SyncTombstone>,
+        tombstonePrunedBefore: Long,
     ): String {
-        val snapshotJson = desktopSnapshotJson(connections, credentials, quickCommands, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, snapshotTime)
+        val snapshotJson = desktopSnapshotJson(connections, credentials, quickCommands, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, snapshotTime, deletedConnections, deletedCredentials, tombstonePrunedBefore)
         val encrypted = recoveryPassword.isNotBlank()
         val content = if (encrypted) encryptLumin2(snapshotJson, recoveryPassword) else snapshotJson
         val fileName = backupFileName(encrypted)
