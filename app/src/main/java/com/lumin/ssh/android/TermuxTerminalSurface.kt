@@ -1,6 +1,7 @@
 package com.lumin.ssh.android
 
 import android.app.AlertDialog
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -9,10 +10,12 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.net.Uri
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.widget.EditText
+import android.widget.Toast
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TextStyle
 import java.text.SimpleDateFormat
@@ -20,10 +23,20 @@ import java.util.Date
 import java.util.Locale
 import com.termux.terminal.TerminalOutput
 import com.termux.view.TerminalRenderer
+import kotlin.math.ceil
+import kotlin.math.hypot
 import kotlin.math.max
 
 class TermuxTerminalSurface(context: Context) : View(context) {
-    private var renderer = TerminalRenderer(20, Typeface.MONOSPACE)
+    private var textSizePx = 20
+    private var renderer = TerminalRenderer(textSizePx, Typeface.MONOSPACE)
+    // 与 TerminalRenderer 一致：行顶 = rowTopOffset + i * lineSpacing
+    private var fontLineSpacing = 0
+    private var rowTopOffset = 0f
+    private val metricsPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Typeface.MONOSPACE
+        textSize = textSizePx.toFloat()
+    }
     private val output = object : TerminalOutput() {
         override fun write(data: ByteArray, offset: Int, count: Int) = onInput(String(data, offset, count))
         override fun titleChanged(oldTitle: String?, newTitle: String?) = Unit
@@ -43,15 +56,24 @@ class TermuxTerminalSurface(context: Context) : View(context) {
     private var topRow = 0
     private var lastY = 0f
     private var downAt = 0L
+    private var downX = 0f
+    private var downY = 0f
     private var copyScreenStep = 0
     private var selectionStart: Pair<Int, Int>? = null
     private var selectionEnd: Pair<Int, Int>? = null
     private val pending = ArrayList<ByteArray>()
+    private val tapSlopPx = 24f * resources.displayMetrics.density
     // Defaults match LuminDarkPalette terminal tokens until setSurfaceColors() runs.
     private var surfaceBackgroundColor: Int = Color.rgb(10, 14, 20)
     private var defaultForegroundColor: Int = Color.rgb(234, 240, 247)
     private var defaultCursorColor: Int = Color.rgb(77, 158, 255)
     private val selectionPaint = Paint().apply { color = Color.argb(110, 244, 67, 54) }
+    // 链接高亮：只画细下划线，不铺底（铺底会挡字）
+    private val linkUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(77, 158, 255)
+        strokeWidth = 1.25f * resources.displayMetrics.density
+        style = Paint.Style.STROKE
+    }
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
@@ -62,6 +84,16 @@ class TermuxTerminalSurface(context: Context) : View(context) {
     init {
         isFocusable = false
         isFocusableInTouchMode = false
+        refreshFontMetrics()
+    }
+
+    /** 复刻 TerminalRenderer 构造时的行距/ascent，高亮才能和字对齐。 */
+    private fun refreshFontMetrics() {
+        metricsPaint.typeface = Typeface.MONOSPACE
+        metricsPaint.textSize = textSizePx.toFloat()
+        fontLineSpacing = ceil(metricsPaint.fontSpacing.toDouble()).toInt()
+        val fontAscent = ceil(metricsPaint.ascent().toDouble()).toInt() // 负值
+        rowTopOffset = (fontLineSpacing + fontAscent).toFloat()
     }
 
     fun setSurfaceColors(background: Int, foreground: Int, cursor: Int) {
@@ -79,8 +111,17 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         colors[TextStyle.COLOR_INDEX_CURSOR] = defaultCursorColor
     }
 
+    /**
+     * @param fontSize 用户字号档位 1–30（设置/音量键）。
+     * 按 density 转成像素再交给 TerminalRenderer；上限 96px，保证 13–30 仍可继续放大。
+     * （旧逻辑 *21/8 后被 coerceIn(1,30) 截断，导致 ≥12 全变成 30px。）
+     */
     fun setFontSize(fontSize: Int) {
-        renderer = TerminalRenderer(fontSize.coerceIn(1, 30), Typeface.MONOSPACE)
+        val level = fontSize.coerceIn(1, 30)
+        val density = resources.displayMetrics.density.coerceAtLeast(1f)
+        textSizePx = (level * density).toInt().coerceIn(1, 96)
+        renderer = TerminalRenderer(textSizePx, Typeface.MONOSPACE)
+        refreshFontMetrics()
         val current = emulator
         if (current == null) {
             requestLayout()
@@ -124,8 +165,59 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         canvas.drawColor(surfaceBackgroundColor)
         val current = emulator ?: return
         renderer.render(current, canvas, topRow, -1, -1, -1, -1)
+        drawLinkHighlights(canvas, current)
         drawSelection(canvas)
         drawCopyHint(canvas)
+    }
+
+    /**
+     * 当前输入逻辑行起始（含 wrap 的上键历史）。该行及之后不识别链接，
+     * 只有已经滚到输出区的内容才可点/高亮。
+     */
+    private fun inputStartRow(emulator: TerminalEmulator): Int {
+        val screen = emulator.screen
+        var row = emulator.cursorRow
+        while (row > 0) {
+            // 上一行若换行续写，则仍属当前输入
+            if (!runCatching { screen.getLineWrap(row - 1) }.getOrDefault(false)) break
+            row--
+        }
+        return row
+    }
+
+    /**
+     * 可见行扫描 URL，只画下划线（不铺底）。
+     *
+     * 不用 renderer 基线推算（容易压进 g/p/q 下伸部），改按可见行格子：
+     *   行 i 顶 = i * lineHeight，行底 = (i+1)*lineHeight
+     * 线画在行底下方 1～2dp（两行之间的缝里），绝不与字形重叠。
+     */
+    private fun drawLinkHighlights(canvas: Canvas, emulator: TerminalEmulator) {
+        val screen = emulator.screen
+        val cols = emulator.mColumns
+        val rows = emulator.mRows
+        val fontWidth = renderer.fontWidth
+        val step = renderer.fontLineSpacing.toFloat()
+        if (step <= 0f) return
+        val skipFrom = inputStartRow(emulator)
+        // 行底再往下一点，落在行间空隙（用户反馈要偏下）
+        val gap = (3.5f * resources.displayMetrics.density).coerceAtMost(step * 0.3f)
+        for (i in 0 until rows) {
+            val row = topRow + i
+            if (row >= skipFrom) continue
+            // join=false：单行原文，避免 wrap 拼接打乱列下标
+            val line = runCatching { screen.getSelectedText(0, row, cols - 1, row, false, false) }.getOrNull() ?: continue
+            if (line.isBlank()) continue
+            val spans = findTerminalUrlSpans(line)
+            if (spans.isEmpty()) continue
+            val underlineY = (i + 1) * step + gap
+            for (span in spans) {
+                val left = span.start * fontWidth
+                val right = span.end * fontWidth
+                if (right <= left) continue
+                canvas.drawLine(left, underlineY, right, underlineY, linkUnderlinePaint)
+            }
+        }
     }
 
     private fun drawSelection(canvas: Canvas) {
@@ -135,10 +227,12 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         val endRow = maxOf(start.second, end.second)
         val left = 0f
         val right = width.toFloat()
+        val step = renderer.fontLineSpacing.toFloat()
+        // 选区与触摸坐标一致：从 0 起按行高步进（TerminalView.getPointY 同理）
         for (row in startRow..endRow) {
-            val y = ((row - topRow) * renderer.fontLineSpacing).toFloat()
-            if (y + renderer.fontLineSpacing >= 0 && y <= height) {
-                canvas.drawRect(left, y, right, y + renderer.fontLineSpacing, selectionPaint)
+            val y = (row - topRow) * step
+            if (y + step >= 0 && y <= height) {
+                canvas.drawRect(left, y, right, y + step, selectionPaint)
             }
         }
     }
@@ -284,10 +378,56 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         invalidate()
     }
 
+    /** 短按点在链接上：弹出复制 / 打开；否则 false 走原 onTap（调键盘）。 */
+    private fun handleLinkTap(event: MotionEvent): Boolean {
+        val current = emulator ?: return false
+        val screen = current.screen
+        val (column, row) = positionFromTouch(event)
+        // 输入行（含上键历史）不点链接
+        if (row >= inputStartRow(current)) return false
+        val word = runCatching { screen.getWordAtLocation(column, row) }.getOrNull().orEmpty()
+        val url = extractTerminalUrl(word) ?: return false
+        showLinkActionDialog(url)
+        return true
+    }
+
+    private fun showLinkActionDialog(url: String) {
+        val items = arrayOf(
+            context.getString(R.string.copy),
+            context.getString(R.string.open_link),
+        )
+        AlertDialog.Builder(context)
+            .setTitle(url)
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> {
+                        context.getSystemService(ClipboardManager::class.java)
+                            ?.setPrimaryClip(ClipData.newPlainText("url", url))
+                        Toast.makeText(context, context.getString(R.string.link_copied), Toast.LENGTH_SHORT).show()
+                    }
+                    1 -> openUrl(url)
+                }
+            }
+            .setNegativeButton(context.getString(R.string.cancel), null)
+            .show()
+    }
+
+    private fun openUrl(url: String) {
+        try {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(context, context.getString(R.string.open_link_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downAt = System.currentTimeMillis()
+                downX = event.x
+                downY = event.y
                 lastY = event.y
                 parent?.requestDisallowInterceptTouchEvent(true)
                 return true
@@ -320,8 +460,12 @@ class TermuxTerminalSurface(context: Context) : View(context) {
                     finishCopyFromScreen()
                     return true
                 }
-                if (System.currentTimeMillis() - downAt > 500) {
+                val longPress = System.currentTimeMillis() - downAt > 500
+                val moved = hypot(event.x - downX, event.y - downY) > tapSlopPx
+                if (longPress) {
                     performLongClick()
+                } else if (!moved && handleLinkTap(event)) {
+                    // 点到链接：已弹窗
                 } else {
                     onTap()
                 }

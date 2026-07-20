@@ -86,7 +86,7 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             }
             cachedFontSize.value = next
             store.saveTerminalFontSize(next)
-            stateRef.terminal?.setFontSize(next * 21 / 8)
+            stateRef.terminal?.setFontSize(next)
             onFontSizeChanged(next)
             Toast.makeText(activity, activity.getString(R.string.font_size_value, next), Toast.LENGTH_SHORT).show()
             true
@@ -502,7 +502,7 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 modifier = Modifier.fillMaxSize(),
                 factory = { context ->
                     TermuxTerminalSurface(context).apply {
-                        setFontSize(store.loadTerminalFontSize() * 21 / 8)
+                        setFontSize(store.loadTerminalFontSize())
                         setSurfaceColors(
                             background = terminalBgArgb,
                             foreground = terminalFgArgb,
@@ -520,7 +520,7 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 },
                 update = { view ->
                     terminal = view
-                    view.setFontSize(store.loadTerminalFontSize() * 21 / 8)
+                    view.setFontSize(store.loadTerminalFontSize())
                     view.setSurfaceColors(
                         background = terminalBgArgb,
                         foreground = terminalFgArgb,

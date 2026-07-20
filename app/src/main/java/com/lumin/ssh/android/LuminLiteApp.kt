@@ -564,6 +564,8 @@ fun LuminLiteApp(
             onExpandAll = { collapsedGroups.clear() },
             onConnect = { conn -> navigateTo(AppScreen.Terminal(conn, null)) },
             onEdit = { conn -> navigateTo(AppScreen.ConnectionEdit(conn)) },
+            // 与 PC 一致：克隆预填全部字段，id 置空走新增
+            onClone = { conn -> navigateTo(AppScreen.ConnectionEdit(conn.copy(id = ""))) },
             onDelete = { conn -> pendingDeleteConnection = conn },
             onGroupDragStarted = { collapseAllGroupsForDrag() },
             onGroupDragStopped = { restoreGroupsAfterDrag() },
@@ -588,7 +590,13 @@ fun LuminLiteApp(
                 navigateTo(AppScreen.Credentials)
             },
             onSave = { conn ->
-                connections = if (editing == null) {
+                val isNew = editing?.id.isNullOrBlank()
+                // 与 PC saveServerConfig 一致：host + port + username 唯一
+                if (hasDuplicateConnection(connections, conn.host, conn.port, conn.username, excludeId = if (isNew) null else conn.id)) {
+                    message = context.getString(R.string.duplicate_server)
+                    return@ConnectionForm
+                }
+                connections = if (isNew) {
                     connections + conn
                 } else {
                     connections.map { if (it.id == conn.id) conn else it }

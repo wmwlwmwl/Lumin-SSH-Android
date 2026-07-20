@@ -3,6 +3,7 @@ package com.lumin.ssh.android
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -52,6 +53,40 @@ class SyncLogicTest {
 
         assertEquals(expected, encryptLumin2WithSaltNonce(payload, password, salt, nonce))
         assertEquals(payload, decryptLumin2(expected, password))
+    }
+
+    @Test
+    fun extractTerminalUrlFromWord() {
+        assertEquals("https://example.com/a", extractTerminalUrl("https://example.com/a"))
+        assertEquals("https://example.com/a", extractTerminalUrl("see https://example.com/a."))
+        assertEquals("https://www.example.com", extractTerminalUrl("www.example.com"))
+        assertEquals("https://www.example.com/path", extractTerminalUrl("www.example.com/path,"))
+        assertEquals("mailto:a@b.com", extractTerminalUrl("mailto:a@b.com"))
+        assertEquals(null, extractTerminalUrl("not-a-url"))
+        assertEquals(null, extractTerminalUrl(""))
+        assertEquals("http://x.test/foo(bar)", extractTerminalUrl("http://x.test/foo(bar)"))
+    }
+
+    @Test
+    fun findTerminalUrlSpansHighlightsMatches() {
+        val spans = findTerminalUrlSpans("see https://a.test/x. and www.b.test/y, end")
+        assertEquals(2, spans.size)
+        assertEquals("https://a.test/x", spans[0].url)
+        assertEquals("https://www.b.test/y", spans[1].url)
+        assertTrue(spans[0].start < spans[0].end)
+        assertEquals("https://a.test/x", spans[0].let { "see https://a.test/x. and www.b.test/y, end".substring(it.start, it.end) })
+        assertEquals(emptyList(), findTerminalUrlSpans("no links here"))
+    }
+
+    @Test
+    fun hasDuplicateConnectionMatchesHostPortUsername() {
+        val list = listOf(Connection("a", "A", "1.1.1.1", port = 22, username = "root"))
+        assertTrue(hasDuplicateConnection(list, "1.1.1.1", 22, "root"))
+        assertTrue(hasDuplicateConnection(list, "1.1.1.1", 0, "root")) // port 0 视为 22
+        assertFalse(hasDuplicateConnection(list, "1.1.1.1", 22, "root", excludeId = "a"))
+        assertFalse(hasDuplicateConnection(list, "1.1.1.1", 2222, "root"))
+        assertFalse(hasDuplicateConnection(list, "1.1.1.1", 22, "admin"))
+        assertFalse(hasDuplicateConnection(list, "2.2.2.2", 22, "root"))
     }
 
     @Test

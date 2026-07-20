@@ -46,6 +46,7 @@ fun HomePage(
     onExpandAll: () -> Unit,
     onConnect: (Connection) -> Unit,
     onEdit: (Connection) -> Unit,
+    onClone: (Connection) -> Unit,
     onDelete: (Connection) -> Unit,
     onGroupDragStarted: () -> Unit,
     onGroupDragStopped: () -> Unit,
@@ -155,6 +156,7 @@ fun HomePage(
                                         conn = conn,
                                         onConnect = { onConnect(conn) },
                                         onEdit = { onEdit(conn) },
+                                        onClone = { onClone(conn) },
                                         onDelete = { onDelete(conn) },
                                         hideSensitive = hideSensitive,
                                     )

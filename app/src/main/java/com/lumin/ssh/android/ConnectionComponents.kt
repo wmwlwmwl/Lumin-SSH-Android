@@ -32,7 +32,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun CompactConnectionRow(conn: Connection, onConnect: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit, hideSensitive: Boolean = false) {
+fun CompactConnectionRow(
+    conn: Connection,
+    onConnect: () -> Unit,
+    onEdit: () -> Unit,
+    onClone: () -> Unit,
+    onDelete: () -> Unit,
+    hideSensitive: Boolean = false,
+) {
     var showMenu by remember { mutableStateOf(false) }
     Card(
         Modifier.fillMaxWidth(),
@@ -69,6 +76,7 @@ fun CompactConnectionRow(conn: Connection, onConnect: () -> Unit, onEdit: () -> 
                 DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                     DropdownMenuItem(text = { Text(stringResource(R.string.connect)) }, onClick = { showMenu = false; onConnect() })
                     DropdownMenuItem(text = { Text(stringResource(R.string.edit)) }, onClick = { showMenu = false; onEdit() })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.clone)) }, onClick = { showMenu = false; onClone() })
                     DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = { showMenu = false; onDelete() })
                 }
             }
@@ -77,7 +85,13 @@ fun CompactConnectionRow(conn: Connection, onConnect: () -> Unit, onEdit: () -> 
 }
 
 @Composable
-fun ConnectionCard(conn: Connection, onConnect: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
+fun ConnectionCard(
+    conn: Connection,
+    onConnect: () -> Unit,
+    onEdit: () -> Unit,
+    onClone: () -> Unit,
+    onDelete: () -> Unit,
+) {
     LuminCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(conn.name, style = MaterialTheme.typography.titleLarge, color = LuminColors.TextPrimary)
@@ -85,6 +99,7 @@ fun ConnectionCard(conn: Connection, onConnect: () -> Unit, onEdit: () -> Unit, 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                 LuminPrimaryButton(onClick = onConnect) { Text(stringResource(R.string.connect)) }
                 LuminSecondaryButton(onClick = onEdit) { Text(stringResource(R.string.edit)) }
+                LuminSecondaryButton(onClick = onClone) { Text(stringResource(R.string.clone)) }
                 LuminDangerButton(onClick = onDelete) { Text(stringResource(R.string.delete)) }
             }
         }

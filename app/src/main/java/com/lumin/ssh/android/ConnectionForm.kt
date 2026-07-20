@@ -40,26 +40,29 @@ fun ConnectionForm(
     onSave: (Connection) -> Unit,
 ) {
     BackHandler(onBack = onCancel)
-    var name by remember(initial?.id) { mutableStateOf(initial?.name ?: "") }
-    var host by remember(initial?.id) { mutableStateOf(initial?.host ?: "") }
-    var port by remember(initial?.id) { mutableStateOf((initial?.port ?: 22).toString()) }
-    var username by remember(initial?.id) { mutableStateOf(initial?.username ?: "") }
-    var group by remember(initial?.id) { mutableStateOf(initial?.group ?: "") }
+    // 克隆时 id 为空，不能只靠 id 当 key，否则连点克隆不同服务器表单不刷新
+    val formKey = initial?.id?.takeIf { it.isNotBlank() }
+        ?: "new|${initial?.host}|${initial?.port}|${initial?.username}|${initial?.name}|${initial?.lastModified}|${initial?.credentialId}|${initial?.proxyNodeId}"
+    var name by remember(formKey) { mutableStateOf(initial?.name ?: "") }
+    var host by remember(formKey) { mutableStateOf(initial?.host ?: "") }
+    var port by remember(formKey) { mutableStateOf((initial?.port ?: 22).toString()) }
+    var username by remember(formKey) { mutableStateOf(initial?.username ?: "") }
+    var group by remember(formKey) { mutableStateOf(initial?.group ?: "") }
     var groupMenuOpen by remember { mutableStateOf(false) }
-    var password by remember(initial?.id) { mutableStateOf(initial?.password ?: "") }
-    var authMethod by remember(initial?.id) { mutableStateOf(initial?.authMethod ?: "password") }
-    var privateKey by remember(initial?.id) { mutableStateOf(initial?.privateKey ?: "") }
-    var passphrase by remember(initial?.id) { mutableStateOf(initial?.passphrase ?: "") }
-    var credentialId by remember(initial?.id) { mutableStateOf(initial?.credentialId ?: "") }
-    var useCredential by remember(initial?.id) { mutableStateOf(!initial?.credentialId.isNullOrBlank()) }
+    var password by remember(formKey) { mutableStateOf(initial?.password ?: "") }
+    var authMethod by remember(formKey) { mutableStateOf(initial?.authMethod ?: "password") }
+    var privateKey by remember(formKey) { mutableStateOf(initial?.privateKey ?: "") }
+    var passphrase by remember(formKey) { mutableStateOf(initial?.passphrase ?: "") }
+    var credentialId by remember(formKey) { mutableStateOf(initial?.credentialId ?: "") }
+    var useCredential by remember(formKey) { mutableStateOf(!initial?.credentialId.isNullOrBlank()) }
     var credentialMenuOpen by remember { mutableStateOf(false) }
-    var proxyMode by remember(initial?.id) { mutableStateOf(initial?.proxyMode?.takeIf { it != "direct" && it != "none" } ?: "") }
-    var proxyNodeId by remember(initial?.id) { mutableStateOf(initial?.proxyNodeId ?: "") }
-    var proxyType by remember(initial?.id) { mutableStateOf(initial?.proxyType ?: "socks5") }
-    var proxyHost by remember(initial?.id) { mutableStateOf(initial?.proxyHost ?: "") }
-    var proxyPort by remember(initial?.id) { mutableStateOf((initial?.proxyPort ?: 1080).toString()) }
-    var proxyUsername by remember(initial?.id) { mutableStateOf(initial?.proxyUsername ?: "") }
-    var proxyPassword by remember(initial?.id) { mutableStateOf(initial?.proxyPassword ?: "") }
+    var proxyMode by remember(formKey) { mutableStateOf(initial?.proxyMode?.takeIf { it != "direct" && it != "none" } ?: "") }
+    var proxyNodeId by remember(formKey) { mutableStateOf(initial?.proxyNodeId ?: "") }
+    var proxyType by remember(formKey) { mutableStateOf(initial?.proxyType ?: "socks5") }
+    var proxyHost by remember(formKey) { mutableStateOf(initial?.proxyHost ?: "") }
+    var proxyPort by remember(formKey) { mutableStateOf((initial?.proxyPort ?: 1080).toString()) }
+    var proxyUsername by remember(formKey) { mutableStateOf(initial?.proxyUsername ?: "") }
+    var proxyPassword by remember(formKey) { mutableStateOf(initial?.proxyPassword ?: "") }
     var proxyMenuOpen by remember { mutableStateOf(false) }
     val selectedCredential = credentials.firstOrNull { it.id == credentialId }
     val selectedProxyNode = proxyNodes.firstOrNull { it.id == proxyNodeId }
@@ -67,10 +70,13 @@ fun ConnectionForm(
         ((!useCredential && (authMethod == "password" || privateKey.isNotBlank())) || (useCredential && credentialId.isNotBlank())) &&
         (proxyMode.isBlank() || (proxyMode == "node" && proxyNodeId.isNotBlank()) || (proxyMode == "custom" && proxyHost.isNotBlank()))
 
+    // id 为空 = 新增/克隆（与 PC 一致：克隆预填字段但 id 置空）
+    val isNew = initial?.id.isNullOrBlank()
+
     fun submit() {
         onSave(
             Connection(
-                id = initial?.id ?: UUID.randomUUID().toString(),
+                id = initial?.id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
                 name = name.ifBlank { host },
                 host = host,
                 port = port.toIntOrNull() ?: 22,
@@ -80,7 +86,7 @@ fun ConnectionForm(
                 privateKey = privateKey,
                 passphrase = passphrase,
                 group = group,
-                os = initial?.os ?: "",
+                os = if (isNew) "" else (initial?.os ?: ""),
                 credentialId = if (useCredential) credentialId else "",
                 proxyMode = proxyMode,
                 proxyNodeId = if (proxyMode == "node") proxyNodeId else "",
@@ -102,7 +108,7 @@ fun ConnectionForm(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         LuminPageHeader(
-            title = if (initial == null) stringResource(R.string.add_server) else stringResource(R.string.edit_server),
+            title = if (isNew) stringResource(R.string.add_server) else stringResource(R.string.edit_server),
             onBack = onCancel,
             backLabel = stringResource(R.string.back),
         ) {

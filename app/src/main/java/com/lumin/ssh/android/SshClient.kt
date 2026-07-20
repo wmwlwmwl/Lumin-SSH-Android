@@ -227,7 +227,11 @@ class SshShellSession(
                 if (count <= 0) break
                 onOutput(buffer.copyOf(count), count)
             }
-            if (!closed.get()) emit(text(R.string.ssh_disconnected))
+            if (!closed.get()) {
+                // 控制符必须在代码里发：strings.xml 常丢掉 \r，只剩 \n 会停在旧列。
+                // ESC[31m 红字，ESC[0m 复位
+                emit("\r\n[31m${text(R.string.ssh_disconnected)}[0m\r\n")
+            }
         }, "ssh-reader-${conn.host}").apply {
             isDaemon = true
             start()

@@ -90,8 +90,10 @@
     <string name="expand_groups">Expand groups</string>
     <string name="ungrouped">Ungrouped</string>
     <string name="edit">Edit</string>
+    <string name="clone">Clone</string>
     <string name="delete">Delete</string>
     <string name="connect">Connect</string>
+    <string name="duplicate_server">A server with the same host, port, and username already exists</string>
 
     <string name="export_completed">Export completed</string>
     <string name="export_failed">Export failed: %1$s</string>
@@ -350,6 +352,9 @@
     <string name="terminal">Terminal</string>
     <string name="select_text">Select text</string>
     <string name="copy">Copy</string>
+    <string name="open_link">Open</string>
+    <string name="link_copied">Link copied</string>
+    <string name="open_link_failed">Could not open link</string>
     <string name="background_session_running">%1$s@%2$s is running in the background</string>
     <string name="disconnect">Disconnect</string>
     <string name="background_ssh_sessions">Background SSH sessions</string>
@@ -365,7 +370,7 @@
     <string name="ssh_connecting_channel">Connecting shell channel</string>
     <string name="ssh_waiting_output">Connected; waiting for remote output</string>
     <string name="ssh_not_connected">SSH is not connected</string>
-    <string name="ssh_disconnected">\r\nConnection disconnected\r\n</string>
+    <string name="ssh_disconnected">Connection disconnected</string>
     <string name="error_unknown">Unknown error</string>
     <string name="error_invalid_backup">Invalid backup format</string>
     <string name="error_recovery_password">Incorrect recovery password</string>

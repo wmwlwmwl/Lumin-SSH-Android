@@ -304,6 +304,24 @@ fun syncSnapshotFromJson(root: JSONObject): SyncSnapshot {
     )
 }
 
+/** 与 PC 一致：host + port + username 唯一；excludeId 用于编辑时排除自身。 */
+fun hasDuplicateConnection(
+    connections: List<Connection>,
+    host: String,
+    port: Int,
+    username: String,
+    excludeId: String? = null,
+): Boolean {
+    val normalizedPort = if (port == 0) 22 else port
+    return connections.any { existing ->
+        val existingId = existing.id
+        (excludeId.isNullOrBlank() || existingId != excludeId) &&
+            existing.host == host &&
+            (if (existing.port == 0) 22 else existing.port) == normalizedPort &&
+            existing.username == username
+    }
+}
+
 data class ImportMergeResult(
     val connections: List<Connection>,
     val credentials: List<Credential>,
