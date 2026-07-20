@@ -31,25 +31,25 @@ fun extractTerminalUrl(word: String): String? {
 fun findTerminalUrlSpans(line: String): List<TerminalUrlSpan> {
     if (line.isBlank()) return emptyList()
     return URL_IN_WORD.findAll(line).mapNotNull { match ->
-        var end = match.range.last + 1
-        var raw = match.value
-        while (raw.isNotEmpty() && raw.last() in TRAILING_PUNCT) {
-            if (raw.last() == ')' && raw.count { it == '(' } >= raw.count { it == ')' }) break
-            raw = raw.dropLast(1)
-            end--
-        }
-        if (raw.isBlank() || end <= match.range.first) return@mapNotNull null
-        val url = normalizeTerminalUrlMatch(raw) ?: return@mapNotNull null
+        val stripped = stripTrailingPunct(match.value)
+        if (stripped.isBlank()) return@mapNotNull null
+        val end = match.range.first + stripped.length
+        val url = normalizeTerminalUrlMatch(stripped) ?: return@mapNotNull null
         TerminalUrlSpan(match.range.first, end, url)
     }.toList()
 }
 
-private fun normalizeTerminalUrlMatch(rawInput: String): String? {
+private fun stripTrailingPunct(rawInput: String): String {
     var raw = rawInput
     while (raw.isNotEmpty() && raw.last() in TRAILING_PUNCT) {
         if (raw.last() == ')' && raw.count { it == '(' } >= raw.count { it == ')' }) break
         raw = raw.dropLast(1)
     }
+    return raw
+}
+
+private fun normalizeTerminalUrlMatch(rawInput: String): String? {
+    val raw = stripTrailingPunct(rawInput)
     if (raw.isBlank()) return null
     val withScheme = when {
         raw.startsWith("www.", ignoreCase = true) -> "https://$raw"

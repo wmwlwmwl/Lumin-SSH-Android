@@ -108,7 +108,7 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
     var connecting by remember { mutableStateOf(false) }
     var closingPage by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    var status by remember { mutableStateOf(context.getString(R.string.connecting)) }
+
     var showShortcutBar by remember { mutableStateOf(true) }
     var keyboardOpenedByTerminal by remember { mutableStateOf(false) }
     var ptySized by remember { mutableStateOf(false) }
@@ -241,7 +241,6 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                     shellReady = false
                     connecting = false
                     connectDetails.clear()
-                    status = context.getString(R.string.connecting)
                     retryNonce++
                     dismiss()
                 }
@@ -301,7 +300,6 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 shellReady = false
                 connecting = false
                 connectDetails.clear()
-                status = context.getString(R.string.connecting)
                 retryNonce++
             }
             .show()
@@ -327,25 +325,30 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             currentShell.resize(columns, rows)
         }
     }
-    val safeSend: (String) -> Unit = { text ->
+    fun sendToShell(payload: String, requireShell: Boolean = false) {
+        if (payload.isEmpty()) return
+        val currentShell = shell
+        if (currentShell == null) {
+            if (requireShell) {
+                terminal?.append(context.getString(R.string.local_shell_not_ready).toByteArray())
+            }
+            return
+        }
         scope.launch {
-            runCatching { shell?.sendRaw(text) }
-                .onFailure { terminal?.append(context.getString(R.string.local_send_failed, context.userErrorText(it)).toByteArray()) }
+            runCatching { currentShell.sendRaw(payload) }
+                .onFailure {
+                    terminal?.append(
+                        context.getString(R.string.local_send_failed, context.userErrorText(it)).toByteArray(),
+                    )
+                }
         }
     }
+    val safeSend: (String) -> Unit = { text -> sendToShell(text) }
     val sendPromptCommand = {
         val line = command
         if (line.isNotBlank()) {
             command = ""
-            val currentShell = shell
-            if (currentShell == null) {
-                terminal?.append(context.getString(R.string.local_shell_not_ready).toByteArray())
-            } else {
-                scope.launch {
-                    runCatching { currentShell.sendRaw("$line\r") }
-                        .onFailure { terminal?.append(context.getString(R.string.local_send_failed, context.userErrorText(it)).toByteArray()) }
-                }
-            }
+            sendToShell("$line\r", requireShell = true)
         }
     }
 
@@ -369,17 +372,12 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
     }
 
     fun sendQuickCommand(item: QuickCommand, filledCommand: String = item.command) {
-        val currentShell = shell
-        if (currentShell == null) {
+        if (shell == null) {
             terminal?.append(context.getString(R.string.local_shell_not_ready).toByteArray())
-        } else {
-            showQuickCommands = false
-            scope.launch {
-                val text = if (item.addCR) "$filledCommand\r" else filledCommand
-                runCatching { currentShell.sendRaw(text) }
-                    .onFailure { terminal?.append(context.getString(R.string.local_send_failed, context.userErrorText(it)).toByteArray()) }
-            }
+            return
         }
+        showQuickCommands = false
+        sendToShell(if (item.addCR) "$filledCommand\r" else filledCommand, requireShell = true)
     }
 
     DisposableEffect(conn.id) {
@@ -422,7 +420,6 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             }
             shell = backgroundEntry.shell
             shellReady = true
-            status = context.getString(R.string.background_session_restored)
             return@LaunchedEffect
         }
         connecting = true
@@ -439,7 +436,6 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             onStatus = { detail ->
                 terminal?.post {
                     if (!closingPage) {
-                        status = detail
                         connectDetails.add(detail)
                     }
                 }
@@ -454,7 +450,6 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                     nextShell.close()
                     return@onSuccess
                 }
-                status = context.getString(R.string.connected)
                 shellReady = true
                 if (!ptySized && pendingColumns > 0 && pendingRows > 0) resizePtyOnce(pendingColumns, pendingRows)
             }
@@ -474,12 +469,10 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                     val isAuthFailure = sshConn.authMethod == "password" && (rawErrorText.contains("Auth fail", ignoreCase = true) || rawErrorText.contains("认证失败"))
                     if (isAuthFailure) {
                         keepConnectPage = true
-                        status = context.getString(R.string.authentication_failed)
                         connectDetails.add(context.getString(R.string.auth_failed_retry_password))
                         showAuthFailedPrompt()
                     } else {
                         keepConnectPage = true
-                        status = context.getString(R.string.connection_failed)
                         connectDetails.add(context.getString(R.string.connection_failed_detail, errorText.ifBlank { context.getString(R.string.unknown) }))
                         showConnectionFailedPrompt(errorText)
                     }

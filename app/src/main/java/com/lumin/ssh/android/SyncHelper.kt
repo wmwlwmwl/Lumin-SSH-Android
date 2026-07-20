@@ -196,7 +196,7 @@ object SyncHelper {
         val deduped = mutableListOf<Connection>()
         val dedupTombs = mutableListOf<SyncTombstone>()
         for (conn in merged) {
-            val key = Triple(conn.host, conn.port, conn.username)
+            val key = conn.identityKey()
             val idx = hostPortMap[key]
             if (idx != null) {
                 val kept = deduped[idx]

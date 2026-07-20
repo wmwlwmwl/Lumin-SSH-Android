@@ -304,6 +304,12 @@ fun syncSnapshotFromJson(root: JSONObject): SyncSnapshot {
     )
 }
 
+/** host + 归一化 port + username；port 0 视为 22（与 PC / 保存去重一致）。 */
+fun connectionIdentityKey(host: String, port: Int, username: String): Triple<String, Int, String> =
+    Triple(host, if (port == 0) 22 else port, username)
+
+fun Connection.identityKey(): Triple<String, Int, String> = connectionIdentityKey(host, port, username)
+
 /** 与 PC 一致：host + port + username 唯一；excludeId 用于编辑时排除自身。 */
 fun hasDuplicateConnection(
     connections: List<Connection>,
@@ -312,13 +318,9 @@ fun hasDuplicateConnection(
     username: String,
     excludeId: String? = null,
 ): Boolean {
-    val normalizedPort = if (port == 0) 22 else port
+    val key = connectionIdentityKey(host, port, username)
     return connections.any { existing ->
-        val existingId = existing.id
-        (excludeId.isNullOrBlank() || existingId != excludeId) &&
-            existing.host == host &&
-            (if (existing.port == 0) 22 else existing.port) == normalizedPort &&
-            existing.username == username
+        (excludeId.isNullOrBlank() || existing.id != excludeId) && existing.identityKey() == key
     }
 }
 
@@ -343,11 +345,11 @@ fun mergeImportedSnapshot(
     localAiGlobalSettingsRaw: String,
     now: Long,
 ): ImportMergeResult {
-    val existingKeys = localConnections.map { Triple(it.host, it.port, it.username) }.toMutableSet()
+    val existingKeys = localConnections.map { it.identityKey() }.toMutableSet()
     val usedIds = localConnections.map { it.id }.toMutableSet()
     var skipped = 0
     val added = snapshot.connections.mapNotNull { imported ->
-        val key = Triple(imported.host, imported.port, imported.username)
+        val key = imported.identityKey()
         if (!existingKeys.add(key)) {
             skipped++
             null

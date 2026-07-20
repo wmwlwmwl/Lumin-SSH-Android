@@ -23,20 +23,12 @@ import java.util.Date
 import java.util.Locale
 import com.termux.terminal.TerminalOutput
 import com.termux.view.TerminalRenderer
-import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.max
 
 class TermuxTerminalSurface(context: Context) : View(context) {
     private var textSizePx = 20
     private var renderer = TerminalRenderer(textSizePx, Typeface.MONOSPACE)
-    // 与 TerminalRenderer 一致：行顶 = rowTopOffset + i * lineSpacing
-    private var fontLineSpacing = 0
-    private var rowTopOffset = 0f
-    private val metricsPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.MONOSPACE
-        textSize = textSizePx.toFloat()
-    }
     private val output = object : TerminalOutput() {
         override fun write(data: ByteArray, offset: Int, count: Int) = onInput(String(data, offset, count))
         override fun titleChanged(oldTitle: String?, newTitle: String?) = Unit
@@ -84,16 +76,6 @@ class TermuxTerminalSurface(context: Context) : View(context) {
     init {
         isFocusable = false
         isFocusableInTouchMode = false
-        refreshFontMetrics()
-    }
-
-    /** 复刻 TerminalRenderer 构造时的行距/ascent，高亮才能和字对齐。 */
-    private fun refreshFontMetrics() {
-        metricsPaint.typeface = Typeface.MONOSPACE
-        metricsPaint.textSize = textSizePx.toFloat()
-        fontLineSpacing = ceil(metricsPaint.fontSpacing.toDouble()).toInt()
-        val fontAscent = ceil(metricsPaint.ascent().toDouble()).toInt() // 负值
-        rowTopOffset = (fontLineSpacing + fontAscent).toFloat()
     }
 
     fun setSurfaceColors(background: Int, foreground: Int, cursor: Int) {
@@ -111,17 +93,12 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         colors[TextStyle.COLOR_INDEX_CURSOR] = defaultCursorColor
     }
 
-    /**
-     * @param fontSize 用户字号档位 1–30（设置/音量键）。
-     * 按 density 转成像素再交给 TerminalRenderer；上限 96px，保证 13–30 仍可继续放大。
-     * （旧逻辑 *21/8 后被 coerceIn(1,30) 截断，导致 ≥12 全变成 30px。）
-     */
+    /** 用户字号档位 1–30，按 density 转像素（上限 96），保证 13–30 可继续放大。 */
     fun setFontSize(fontSize: Int) {
         val level = fontSize.coerceIn(1, 30)
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
         textSizePx = (level * density).toInt().coerceIn(1, 96)
         renderer = TerminalRenderer(textSizePx, Typeface.MONOSPACE)
-        refreshFontMetrics()
         val current = emulator
         if (current == null) {
             requestLayout()
@@ -290,11 +267,6 @@ class TermuxTerminalSurface(context: Context) : View(context) {
             }
             .show()
         return true
-    }
-
-    private fun copyTranscriptToClipboard(label: String, clipboard: ClipboardManager?) {
-        val text = emulator?.screen?.getTranscriptText() ?: ""
-        clipboard?.setPrimaryClip(ClipData.newPlainText(label, text))
     }
 
     private fun clearTerminalScreen() {
