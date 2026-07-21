@@ -198,8 +198,8 @@ PowerShell 生成 base64 并复制到剪贴板：
 
 | 项 | 值 |
 |----|-----|
-| versionName | `0.1.0`（根目录 `VERSION`） |
-| versionCode | `1` |
+| versionName | `0.1.1`（根目录 `VERSION`） |
+| versionCode | `2` |
 | 应用显示名 | Lumin SSH |
 | applicationId | `com.lumin.ssh.android`（改名商店会当成新应用，勿轻易改） |
 | 自动打包 | `.github/workflows/android-ci.yml` / `android-release.yml` |
