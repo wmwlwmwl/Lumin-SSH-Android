@@ -224,8 +224,12 @@ class TermuxTerminalSurface(context: Context) : View(context) {
                     val physRow = parts.startRow + segIdx
                     val vis = physRow - topRow
                     if (vis < 0 || vis >= rows || physRow >= skipFrom) return@forEachIndexed
-                    val col0 = (span.start - segStart).coerceAtLeast(0)
-                    val col1 = (span.end - segStart).coerceAtMost(text.length)
+                    // span 是字符串下标；中文等宽字符占 2 列，必须映射到终端列再乘 fontWidth
+                    val localStart = (span.start - segStart).coerceAtLeast(0)
+                    val localEnd = (span.end - segStart).coerceAtMost(text.length)
+                    if (localEnd <= localStart) return@forEachIndexed
+                    val col0 = stringIndexToColumn(text, localStart)
+                    val col1 = stringIndexToColumn(text, localEnd)
                     if (col1 <= col0) return@forEachIndexed
                     val left = col0 * fontWidth
                     val right = col1 * fontWidth
@@ -481,69 +485,100 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         invalidate()
     }
 
-    /** 短按点在链接上：弹出复制 / 打开；否则 false 走原 onTap（调键盘）。 */
+    /**
+     * 短按点在链接附近：弹出复制 / 打开；否则 false 走原 onTap（调键盘）。
+     * 按像素矩形命中（非字符下标），上下左右留手指容差；DOWN/UP 任一命中即可。
+     */
     private fun handleLinkTap(event: MotionEvent): Boolean {
         val current = emulator ?: run {
             AppLog.d("Link", "tap miss: no emulator")
             return false
         }
-        val screen = current.screen
-        val (column, row) = positionFromTouch(event)
-        val inputStart = inputStartRow(current)
-        if (row >= inputStart) {
-            AppLog.d("Link", "tap miss: input row col=$column row=$row inputStart=$inputStart")
-            return false
-        }
-        val cols = current.mColumns
-        // 逻辑行拼接，换行 URL 也能命中完整地址
-        val minRow = -screen.activeTranscriptRows
-        val maxRow = current.mRows - 1
-        val parts = logicalParts(screen, cols, row, minRow, maxRow)
-        val spans = findTerminalUrlSpans(parts.joined)
-        if (spans.isEmpty()) {
-            AppLog.d("Link", "tap miss: no spans col=$column row=$row joinedLen=${parts.joined.length}")
-            return false
-        }
-        // 点击列映射到 joined 下标
-        var offset = 0
-        var joinedCol = -1
-        parts.texts.forEachIndexed { idx, text ->
-            val phys = parts.startRow + idx
-            if (phys == row) {
-                joinedCol = offset + column.coerceIn(0, (text.length - 1).coerceAtLeast(0))
-            }
-            offset += text.length
-        }
-        if (joinedCol < 0) {
-            AppLog.d("Link", "tap miss: col map failed col=$column row=$row")
-            return false
-        }
-        // 放宽命中：精确列 + 左右各 2 列容差（高亮看起来宽，实际列易偏）
-        val hit = spans.firstOrNull { joinedCol in it.start until it.end }
-            ?: spans.minByOrNull { span ->
-                when {
-                    joinedCol < span.start -> span.start - joinedCol
-                    joinedCol >= span.end -> joinedCol - (span.end - 1)
-                    else -> 0
-                }
-            }?.takeIf { span ->
-                val dist = when {
-                    joinedCol < span.start -> span.start - joinedCol
-                    joinedCol >= span.end -> joinedCol - (span.end - 1)
-                    else -> 0
-                }
-                dist <= 2
-            }
+        // DOWN 与 UP 都试：抬手微移时仍可能落在链接上
+        val hit = findLinkNear(current, event.x, event.y)
+            ?: findLinkNear(current, downX, downY)
         if (hit == null) {
-            AppLog.d(
-                "Link",
-                "tap miss: near miss col=$column row=$row joinedCol=$joinedCol spans=${spans.joinToString { "${it.start}-${it.end}" }}",
-            )
+            AppLog.d("Link", "tap miss: no near link x=${event.x} y=${event.y}")
             return false
         }
-        AppLog.i("Link", "tap hit url=${hit.url} col=$column row=$row joinedCol=$joinedCol")
+        AppLog.i("Link", "tap hit url=${hit.url} dist=${hit.dist}")
         showLinkActionDialog(hit.url)
         return true
+    }
+
+    private data class LinkHit(val url: String, val dist: Float)
+
+    /**
+     * 可见区链接段 → 像素包围盒，取离触点最近且在容差内的 URL。
+     * 垂直容差约 0.55 行高，水平约 10dp，方便点细下划线。
+     */
+    private fun findLinkNear(emulator: TerminalEmulator, x: Float, y: Float): LinkHit? {
+        val screen = emulator.screen
+        val cols = emulator.mColumns
+        val rows = emulator.mRows
+        val fontWidth = renderer.fontWidth
+        val step = renderer.fontLineSpacing.toFloat()
+        if (step <= 0f || fontWidth <= 0f) return null
+        val density = resources.displayMetrics.density
+        val padX = 10f * density
+        val padY = (step * 0.55f).coerceAtLeast(10f * density)
+        val skipFrom = inputStartRow(emulator)
+        val minRow = topRow
+        val maxRow = topRow + rows - 1
+        var best: LinkHit? = null
+        val seen = HashSet<String>()
+        var i = 0
+        while (i < rows) {
+            val row = topRow + i
+            if (row >= skipFrom) break
+            if (row > minRow && runCatching { screen.getLineWrap(row - 1) }.getOrDefault(false)) {
+                i++
+                continue
+            }
+            val parts = logicalParts(screen, cols, row, minRow, maxOf(maxRow, skipFrom - 1))
+            val spans = findTerminalUrlSpans(parts.joined)
+            for (span in spans) {
+                val id = "${parts.startRow}:${span.start}-${span.end}:${span.url}"
+                if (!seen.add(id)) continue
+                var cursor = 0
+                parts.texts.forEachIndexed { segIdx, text ->
+                    val segStart = cursor
+                    val segEnd = cursor + text.length
+                    cursor = segEnd
+                    if (span.end <= segStart || span.start >= segEnd) return@forEachIndexed
+                    val physRow = parts.startRow + segIdx
+                    val vis = physRow - topRow
+                    if (vis < 0 || vis >= rows || physRow >= skipFrom) return@forEachIndexed
+                    val localStart = (span.start - segStart).coerceAtLeast(0)
+                    val localEnd = (span.end - segStart).coerceAtMost(text.length)
+                    if (localEnd <= localStart) return@forEachIndexed
+                    val col0 = stringIndexToColumn(text, localStart)
+                    val col1 = stringIndexToColumn(text, localEnd)
+                    if (col1 <= col0) return@forEachIndexed
+                    val left = col0 * fontWidth - padX
+                    val right = col1 * fontWidth + padX
+                    val top = vis * step - padY
+                    val bottom = (vis + 1) * step + padY
+                    val dx = when {
+                        x < left -> left - x
+                        x > right -> x - right
+                        else -> 0f
+                    }
+                    val dy = when {
+                        y < top -> top - y
+                        y > bottom -> y - bottom
+                        else -> 0f
+                    }
+                    // 在扩展盒内：取曼哈顿距离最近（盒内为 0）
+                    if (dx == 0f && dy == 0f) {
+                        val cand = LinkHit(span.url, 0f)
+                        if (best == null || cand.dist < best!!.dist) best = cand
+                    }
+                }
+            }
+            i += parts.texts.size.coerceAtLeast(1)
+        }
+        return best
     }
 
     private fun showLinkActionDialog(url: String) {
@@ -616,8 +651,8 @@ class TermuxTerminalSurface(context: Context) : View(context) {
                     return true
                 }
                 val longPress = System.currentTimeMillis() - downAt > 500
-                // 链接命中放宽移动阈值（手指难绝对静止）
-                val linkSlop = tapSlopPx * 1.6f
+                // 链接命中再放宽移动阈值（点细下划线时手指常微抖）
+                val linkSlop = tapSlopPx * 2.2f
                 val movedFar = hypot(event.x - downX, event.y - downY) > linkSlop
                 val movedTap = hypot(event.x - downX, event.y - downY) > tapSlopPx
                 if (longPress) {

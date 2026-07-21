@@ -79,6 +79,40 @@ class SyncLogicTest {
     }
 
     @Test
+    fun findTerminalUrlSpansStopsAtShellSeparators() {
+        // if curl ...;else wget ...;fi;bash — URL 不能吞掉 ;else / ;fi
+        val line =
+            "if [ -f /usr/bin/curl ];then curl -sSO https://download.example.com/install/install_panel.sh;else wget -O install_panel.sh https://download.example.com/install/install_panel.sh;fi;bash install_panel.sh"
+        val spans = findTerminalUrlSpans(line)
+        assertEquals(2, spans.size)
+        assertEquals("https://download.example.com/install/install_panel.sh", spans[0].url)
+        assertEquals("https://download.example.com/install/install_panel.sh", spans[1].url)
+        assertFalse(spans.any { it.url.contains(";") || it.url.contains("else") || it.url.contains("fi") })
+        // 管道也不吞
+        val pipe = findTerminalUrlSpans("curl https://a.test/x.sh | bash")
+        assertEquals(1, pipe.size)
+        assertEquals("https://a.test/x.sh", pipe[0].url)
+    }
+
+    @Test
+    fun stringIndexToColumnAccountsForWideChars() {
+        // ASCII 1 列；CJK 2 列（与终端渲染一致）
+        assertEquals(0, stringIndexToColumn("abc", 0))
+        assertEquals(2, stringIndexToColumn("abc", 2))
+        assertEquals(3, stringIndexToColumn("abc", 3))
+        assertEquals(0, stringIndexToColumn("中文", 0))
+        assertEquals(2, stringIndexToColumn("中文", 1))
+        assertEquals(4, stringIndexToColumn("中文", 2))
+        // 「外网」4 列 + "https" 从第 4 列开始（假地址，仅测列宽）
+        val line = "外网https://example.com/path"
+        val urlStart = line.indexOf("https://")
+        assertEquals(4, stringIndexToColumn(line, urlStart))
+        assertEquals(urlStart, columnToStringIndex(line, 4))
+        assertEquals(0, columnToStringIndex(line, 0))
+        assertEquals(1, columnToStringIndex(line, 2)) // 第二字「网」
+    }
+
+    @Test
     fun expandLogicalLineJoinsWrapSegments() {
         // 模拟两行 wrap：https://example.com/very/long/path
         val lines = listOf("https://example.com/very/", "long/path")

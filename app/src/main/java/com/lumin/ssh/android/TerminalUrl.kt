@@ -1,9 +1,11 @@
 package com.lumin.ssh.android
 
+import com.termux.terminal.WcWidth
 import java.net.URI
 
+// 排除 ; | 等 shell 分隔符，避免 curl ...sh;else 把后续命令粘进链接
 private val URL_IN_WORD = Regex(
-    """(?i)((?:https?|ftp)://[^\s<>"']+|www\.[^\s<>"']+|mailto:[^\s<>"']+)""",
+    """(?i)((?:https?|ftp)://[^\s<>"';|]+|www\.[^\s<>"';|]+|mailto:[^\s<>"';|]+)""",
 )
 
 private val TRAILING_PUNCT = charArrayOf('.', ',', ';', ':', '!', '?', ')', ']', '}', '>', '"', '\'')
@@ -16,6 +18,42 @@ data class TerminalUrlSpan(
     /** 可打开的规范化 URL */
     val url: String,
 )
+
+/**
+ * 字符串下标 → 终端列（宽字符占 2 列）。
+ * [index] 为 UTF-16 下标；中途遇代理对按 code point 前进。
+ * 返回该下标处字符的起始列（0-based）；index==length 时返回整串占用列数。
+ */
+fun stringIndexToColumn(text: String, index: Int): Int {
+    if (text.isEmpty() || index <= 0) return 0
+    val end = index.coerceAtMost(text.length)
+    var col = 0
+    var i = 0
+    while (i < end) {
+        val cp = text.codePointAt(i)
+        val w = WcWidth.width(cp)
+        if (w > 0) col += w
+        i += Character.charCount(cp)
+    }
+    return col
+}
+
+/** 终端列（0-based）→ 不大于该列的最右字符串下标（用于点击命中）。 */
+fun columnToStringIndex(text: String, column: Int): Int {
+    if (text.isEmpty() || column <= 0) return 0
+    var col = 0
+    var i = 0
+    while (i < text.length) {
+        val cp = text.codePointAt(i)
+        val w = WcWidth.width(cp)
+        val advance = if (w > 0) w else 0
+        if (column < col + advance) return i
+        col += advance
+        i += Character.charCount(cp)
+        if (column <= col) return i.coerceAtMost(text.length)
+    }
+    return text.length
+}
 
 /**
  * 从终端「词」（空格分隔）里抽出可打开的 URL。
