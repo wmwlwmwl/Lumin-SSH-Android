@@ -54,6 +54,8 @@
     <string name="download_update">Download update</string>
     <string name="open_release_page">Open release page</string>
     <string name="update_available_toast">Version %1$s is available — see About</string>
+    <string name="go_update">Update</string>
+    <string name="update_dialog_body">Version %1$s is available. Download now?</string>
     <string name="back">Back</string>
 
     <string name="settings_title">Settings</string>

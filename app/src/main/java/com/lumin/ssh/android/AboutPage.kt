@@ -15,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,7 +29,7 @@ import kotlinx.coroutines.launch
 
 @Suppress("DEPRECATION")
 @Composable
-fun AboutPage(onBack: () -> Unit) {
+fun AboutPage(onBack: () -> Unit, knownUpdate: AppUpdateInfo? = null) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -47,6 +48,12 @@ fun AboutPage(onBack: () -> Unit) {
     var checkingUpdate by remember { mutableStateOf(false) }
     var updateStatus by remember { mutableStateOf<String?>(null) }
     var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    // 启动检查已发现更新时，进入关于页直接展示，不必再点「检查更新」
+    LaunchedEffect(knownUpdate) {
+        val info = knownUpdate?.takeIf { it.hasUpdate } ?: return@LaunchedEffect
+        updateInfo = info
+        updateStatus = context.getString(R.string.update_available, info.latestVersion)
+    }
 
     fun openUrl(url: String) {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))

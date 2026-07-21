@@ -1,11 +1,19 @@
 package com.lumin.ssh.android
 
 import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -14,8 +22,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
@@ -156,7 +166,9 @@ fun LuminLiteApp(
             reportAutomaticSyncFailure(outcome)
         }
     }
-    // 启动后静默检查新版本（类似桌面延迟），仅有更新时 Toast
+    // 启动后静默检查新版本（类似桌面延迟）；有更新时弹窗，结果缓存给关于页直接展示
+    var knownUpdateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var showStartupUpdateDialog by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         delay(2500)
         val current = runCatching {
@@ -165,7 +177,8 @@ fun LuminLiteApp(
         val repo = context.getString(R.string.github_repo)
         UpdateChecker.check(current, repo).onSuccess { info ->
             if (info.hasUpdate) {
-                message = context.getString(R.string.update_available_toast, info.latestVersion)
+                knownUpdateInfo = info
+                showStartupUpdateDialog = true
             }
         }
     }
@@ -474,7 +487,10 @@ fun LuminLiteApp(
     }
 
     if (screen == AppScreen.About) {
-        AboutPage(onBack = { navigateBack(AppScreen.Settings) })
+        AboutPage(
+            onBack = { navigateBack(AppScreen.Settings) },
+            knownUpdate = knownUpdateInfo,
+        )
     }
 
     if (screen == AppScreen.SyncSettings) {
@@ -696,5 +712,49 @@ fun LuminLiteApp(
                 triggerAutoSync()
             },
         )
+    }
+
+    if (showStartupUpdateDialog) {
+        val info = knownUpdateInfo
+        if (info != null) {
+            fun openUpdateUrl(url: String) {
+                runCatching {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                }
+                showStartupUpdateDialog = false
+            }
+            Dialog(onDismissRequest = { showStartupUpdateDialog = false }) {
+                LuminDialogCard {
+                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Text(
+                            stringResource(R.string.update_available, info.latestVersion),
+                            style = MaterialTheme.typography.titleLarge,
+                            color = LuminColors.TextPrimary,
+                        )
+                        Text(
+                            stringResource(R.string.update_dialog_body, info.latestVersion),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = LuminColors.TextSecondary,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            LuminSecondaryButton(
+                                onClick = { showStartupUpdateDialog = false },
+                                modifier = Modifier.weight(1f),
+                            ) { Text(stringResource(R.string.cancel)) }
+                            LuminPrimaryButton(
+                                onClick = {
+                                    openUpdateUrl(info.apkUrl?.takeIf { it.isNotBlank() } ?: info.releaseUrl)
+                                },
+                                modifier = Modifier.weight(1f),
+                            ) { Text(stringResource(R.string.go_update)) }
+                        }
+                        LuminSecondaryButton(
+                            onClick = { openUpdateUrl(info.releaseUrl) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(stringResource(R.string.open_release_page)) }
+                    }
+                }
+            }
+        }
     }
 }

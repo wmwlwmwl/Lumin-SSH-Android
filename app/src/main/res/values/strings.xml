@@ -54,6 +54,8 @@
     <string name="download_update">下载更新</string>
     <string name="open_release_page">打开发布页</string>
     <string name="update_available_toast">有新版本 %1$s 可用，可在关于页查看</string>
+    <string name="go_update">去更新</string>
+    <string name="update_dialog_body">发现新版本 %1$s，是否前往下载更新？</string>
     <string name="back">返回</string>
 
     <string name="settings_title">设置</string>
