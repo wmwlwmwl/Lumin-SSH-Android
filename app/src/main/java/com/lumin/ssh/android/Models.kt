@@ -48,27 +48,89 @@ data class ProxyNode(
     val updatedAt: Long = System.currentTimeMillis(),
 )
 
+// 同步比较/上传规范化，与 PC normalizeConnectionForSync 对齐：
+// trim；proxyMode 空→direct；direct/node 清掉无意义 proxy*；避免写 socks5/1080 空串被当成变更。
+fun Connection.normalizedForSync(): Connection {
+    val mode = when (proxyMode.trim().lowercase()) {
+        "node" -> "node"
+        "custom" -> "custom"
+        else -> "direct"
+    }
+    val base = copy(
+        id = id.trim(),
+        name = name.trim(),
+        host = host.trim(),
+        username = username.trim(),
+        password = password.trim(),
+        authMethod = authMethod.trim(),
+        privateKey = privateKey.trim(),
+        passphrase = passphrase.trim(),
+        group = group.trim(),
+        os = os.trim(),
+        credentialId = credentialId.trim(),
+        proxyMode = mode,
+        proxyNodeId = proxyNodeId.trim(),
+        proxyHost = proxyHost.trim(),
+        proxyUsername = proxyUsername.trim(),
+        proxyPassword = proxyPassword.trim(),
+    )
+    return when (mode) {
+        "direct" -> base.copy(
+            proxyNodeId = "",
+            proxyType = "",
+            proxyHost = "",
+            proxyPort = 0,
+            proxyUsername = "",
+            proxyPassword = "",
+        )
+        "node" -> base.copy(
+            proxyType = "",
+            proxyHost = "",
+            proxyPort = 0,
+            proxyUsername = "",
+            proxyPassword = "",
+        )
+        else -> base.copy(
+            proxyNodeId = "",
+            proxyType = if (base.proxyType == "http") "http" else "socks5",
+            proxyPort = if (base.proxyPort in 1..65535) base.proxyPort else 1080,
+        )
+    }
+}
+
+fun Credential.normalizedForSync(): Credential = copy(
+    id = id.trim(),
+    name = name.trim(),
+    authMethod = authMethod.trim(),
+    username = username.trim(),
+    password = password.trim(),
+    privateKey = privateKey.trim(),
+    passphrase = passphrase.trim(),
+)
+
+/** 空字段 omit（对齐 PC omitempty），避免与 PC 互相覆盖造成乒乓。 */
 fun Connection.toJson() = JSONObject().apply {
-    put("id", id)
-    put("name", name)
-    put("host", host)
-    put("port", port)
-    put("username", username)
-    put("password", password)
-    put("authMethod", authMethod)
-    put("privateKey", privateKey)
-    put("passphrase", passphrase)
-    put("group", group)
-    put("os", os)
-    put("credentialId", credentialId)
-    put("proxyMode", proxyMode)
-    put("proxyNodeId", proxyNodeId)
-    put("proxyType", proxyType)
-    put("proxyHost", proxyHost)
-    put("proxyPort", proxyPort)
-    put("proxyUsername", proxyUsername)
-    put("proxyPassword", proxyPassword)
-    put("last_modified", lastModified)
+    val n = normalizedForSync()
+    put("id", n.id)
+    put("name", n.name)
+    put("host", n.host)
+    put("port", n.port)
+    put("username", n.username)
+    if (n.password.isNotEmpty()) put("password", n.password)
+    put("authMethod", n.authMethod)
+    if (n.privateKey.isNotEmpty()) put("privateKey", n.privateKey)
+    if (n.passphrase.isNotEmpty()) put("passphrase", n.passphrase)
+    if (n.group.isNotEmpty()) put("group", n.group)
+    if (n.os.isNotEmpty()) put("os", n.os)
+    if (n.credentialId.isNotEmpty()) put("credentialId", n.credentialId)
+    if (n.proxyMode.isNotEmpty()) put("proxyMode", n.proxyMode)
+    if (n.proxyNodeId.isNotEmpty()) put("proxyNodeId", n.proxyNodeId)
+    if (n.proxyType.isNotEmpty()) put("proxyType", n.proxyType)
+    if (n.proxyHost.isNotEmpty()) put("proxyHost", n.proxyHost)
+    if (n.proxyPort != 0) put("proxyPort", n.proxyPort)
+    if (n.proxyUsername.isNotEmpty()) put("proxyUsername", n.proxyUsername)
+    if (n.proxyPassword.isNotEmpty()) put("proxyPassword", n.proxyPassword)
+    if (n.lastModified != 0L) put("last_modified", n.lastModified)
 }
 
 fun JSONObject.toConnection() = Connection(
@@ -86,13 +148,18 @@ fun JSONObject.toConnection() = Connection(
     credentialId = optString("credentialId"),
     proxyMode = optString("proxyMode"),
     proxyNodeId = optString("proxyNodeId"),
-    proxyType = if (optString("proxyType") == "http") "http" else "socks5",
+    // 缺省不填 socks5：由 normalizedForSync 在 direct 时清掉
+    proxyType = when (optString("proxyType")) {
+        "http" -> "http"
+        "socks5" -> "socks5"
+        else -> ""
+    },
     proxyHost = optString("proxyHost"),
-    proxyPort = optInt("proxyPort", 1080),
+    proxyPort = if (has("proxyPort")) optInt("proxyPort") else 0,
     proxyUsername = optString("proxyUsername"),
     proxyPassword = optString("proxyPassword"),
     lastModified = optLong("last_modified", System.currentTimeMillis()),
-)
+).normalizedForSync()
 
 fun connectionsToJson(connections: List<Connection>) = JSONArray().apply {
     connections.forEach { put(it.toJson()) }
@@ -105,14 +172,15 @@ fun connectionsFromJson(json: String): List<Connection> {
 }
 
 fun Credential.toJson() = JSONObject().apply {
-    put("id", id)
-    put("name", name)
-    put("authMethod", authMethod)
-    put("username", username)
-    put("password", password)
-    put("privateKey", privateKey)
-    put("passphrase", passphrase)
-    put("last_modified", lastModified)
+    val n = normalizedForSync()
+    put("id", n.id)
+    put("name", n.name)
+    put("authMethod", n.authMethod)
+    put("username", n.username)
+    if (n.password.isNotEmpty()) put("password", n.password)
+    if (n.privateKey.isNotEmpty()) put("privateKey", n.privateKey)
+    if (n.passphrase.isNotEmpty()) put("passphrase", n.passphrase)
+    if (n.lastModified != 0L) put("last_modified", n.lastModified)
 }
 
 fun JSONObject.toCredential() = Credential(
@@ -124,7 +192,7 @@ fun JSONObject.toCredential() = Credential(
     privateKey = optString("privateKey"),
     passphrase = optString("passphrase"),
     lastModified = optLong("last_modified", System.currentTimeMillis()),
-)
+).normalizedForSync()
 
 fun credentialsToJson(credentials: List<Credential>) = JSONArray().apply {
     credentials.forEach { put(it.toJson()) }

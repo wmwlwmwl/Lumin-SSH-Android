@@ -628,7 +628,11 @@ object SyncHelper {
                 aiProvidersRaw = filterRemoteDeletedRawByUpdatedAt(merged.aiProvidersRaw, snapshots) { it.aiProvidersRaw },
             )
         }
-        val final = merged
+        // 上传包规范化连接/凭据，与 PC uploadSnapshot 一致，打断 omitempty vs 默认字段乒乓
+        val final = merged.copy(
+            connections = merged.connections.map { it.normalizedForSync() },
+            credentials = merged.credentials.map { it.normalizedForSync() },
+        )
         val uploadIndexes = remotes.indices.filterTo(linkedSetOf()) { remotes[it]?.let { remoteSnapshot -> !snapshotBusinessEqual(final, remoteSnapshot) } ?: true }
         val localChanged = !snapshotBusinessEqual(final, local)
         val cloudChanged = uploadIndexes.isNotEmpty()
@@ -642,42 +646,46 @@ object SyncHelper {
     }
 
     internal fun snapshotBusinessEqual(a: SyncSnapshot, b: SyncSnapshot): Boolean =
-        a.connections.associateBy { it.id } == b.connections.associateBy { it.id } &&
-            a.credentials.associateBy { it.id } == b.credentials.associateBy { it.id } &&
+        a.connections.map { it.normalizedForSync() }.associateBy { it.id } ==
+            b.connections.map { it.normalizedForSync() }.associateBy { it.id } &&
+            a.credentials.map { it.normalizedForSync() }.associateBy { it.id } ==
+            b.credentials.map { it.normalizedForSync() }.associateBy { it.id } &&
             a.proxyNodes.associateBy { it.id } == b.proxyNodes.associateBy { it.id } &&
-            jsonArrayEqual(a.quickCommands, b.quickCommands, ordered = true) &&
+            jsonArrayEqual(a.quickCommands, b.quickCommands, ordered = true, ignoreExpanded = true) &&
             jsonArrayEqual(a.aiProvidersRaw, b.aiProvidersRaw, ordered = false) &&
             jsonObjectEqual(a.aiGlobalSettingsRaw, b.aiGlobalSettingsRaw) &&
             tombstonesEqual(a.deletedConnections, b.deletedConnections) &&
             tombstonesEqual(a.deletedCredentials, b.deletedCredentials) &&
             a.tombstonePrunedBefore == b.tombstonePrunedBefore
 
-    private fun jsonArrayEqual(aRaw: String, bRaw: String, ordered: Boolean): Boolean {
+    private fun jsonArrayEqual(aRaw: String, bRaw: String, ordered: Boolean, ignoreExpanded: Boolean = false): Boolean {
         val a = if (aRaw.isBlank()) JSONArray() else runCatching { JSONArray(aRaw) }.getOrNull() ?: return aRaw == bRaw
         val b = if (bRaw.isBlank()) JSONArray() else runCatching { JSONArray(bRaw) }.getOrNull() ?: return aRaw == bRaw
         if (a.length() != b.length()) return false
-        if (ordered) return (0 until a.length()).all { jsonValueEqual(a.opt(it), b.opt(it)) }
+        if (ordered) return (0 until a.length()).all { jsonValueEqual(a.opt(it), b.opt(it), ignoreExpanded) }
         val aById = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.associateBy { it.optString("id") }
         val bById = (0 until b.length()).mapNotNull { b.optJSONObject(it) }.associateBy { it.optString("id") }
-        return aById.size == a.length() && bById.size == b.length() && aById.keys == bById.keys && aById.all { (id, value) -> jsonValueEqual(value, bById[id]) }
+        return aById.size == a.length() && bById.size == b.length() && aById.keys == bById.keys &&
+            aById.all { (id, value) -> jsonValueEqual(value, bById[id], ignoreExpanded) }
     }
 
     private fun jsonObjectEqual(aRaw: String, bRaw: String): Boolean {
         if (aRaw.isBlank() || bRaw.isBlank()) return aRaw.isBlank() && bRaw.isBlank()
         val a = runCatching { JSONObject(aRaw) }.getOrNull() ?: return aRaw == bRaw
         val b = runCatching { JSONObject(bRaw) }.getOrNull() ?: return aRaw == bRaw
-        return jsonValueEqual(a, b)
+        return jsonValueEqual(a, b, ignoreExpanded = false)
     }
 
-    private fun jsonValueEqual(a: Any?, b: Any?): Boolean = when {
+    private fun jsonValueEqual(a: Any?, b: Any?, ignoreExpanded: Boolean = false): Boolean = when {
         a === b -> true
         a == null || b == null || a == JSONObject.NULL || b == JSONObject.NULL -> a == b
         a is JSONObject && b is JSONObject -> {
-            val aKeys = a.keys().asSequence().toSet()
-            val bKeys = b.keys().asSequence().toSet()
-            aKeys == bKeys && aKeys.all { jsonValueEqual(a.opt(it), b.opt(it)) }
+            val aKeys = a.keys().asSequence().filter { !(ignoreExpanded && it == "expanded") }.toSet()
+            val bKeys = b.keys().asSequence().filter { !(ignoreExpanded && it == "expanded") }.toSet()
+            aKeys == bKeys && aKeys.all { jsonValueEqual(a.opt(it), b.opt(it), ignoreExpanded) }
         }
-        a is JSONArray && b is JSONArray -> a.length() == b.length() && (0 until a.length()).all { jsonValueEqual(a.opt(it), b.opt(it)) }
+        a is JSONArray && b is JSONArray ->
+            a.length() == b.length() && (0 until a.length()).all { jsonValueEqual(a.opt(it), b.opt(it), ignoreExpanded) }
         a is Number && b is Number -> a.toString().toBigDecimalOrNull()?.compareTo(b.toString().toBigDecimalOrNull()) == 0
         else -> a == b
     }

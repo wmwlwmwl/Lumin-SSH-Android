@@ -579,4 +579,75 @@ class SyncLogicTest {
         assertTrue(!SyncHelper.snapshotBusinessEqual(base, withTomb))
     }
 
+
+    @Test
+    fun connectionNormalizeMakesPcAndAndroidFormsEqual() {
+        val pc = Connection(
+            id = "1", name = "s", host = "h", port = 22, username = "u",
+            password = "p", authMethod = "password", proxyMode = "direct", lastModified = 100,
+        )
+        val androidStyle = Connection(
+            id = "1", name = "s", host = "h", port = 22, username = "u",
+            password = "p", authMethod = "password", privateKey = "", passphrase = "", group = "",
+            credentialId = "", proxyMode = "direct", proxyNodeId = "", proxyType = "socks5",
+            proxyHost = "", proxyPort = 1080, proxyUsername = "", proxyPassword = "", lastModified = 100,
+        )
+        assertEquals(pc.normalizedForSync(), androidStyle.normalizedForSync())
+        assertTrue(
+            SyncHelper.snapshotBusinessEqual(
+                SyncSnapshot(listOf(pc), emptyList()),
+                SyncSnapshot(listOf(androidStyle), emptyList()),
+            ),
+        )
+    }
+
+    @Test
+    fun quickCommandsExpandedIgnoredInBusinessEqual() {
+        val a = """[{"type":"group","name":"面板安装","expanded":true,"children":[{"name":"宝塔","command":"x","last_modified":1}],"last_modified":1}]"""
+        val b = """[{"type":"group","name":"面板安装","expanded":false,"children":[{"name":"宝塔","command":"x","last_modified":1}],"last_modified":1}]"""
+        assertTrue(
+            SyncHelper.snapshotBusinessEqual(
+                SyncSnapshot(emptyList(), emptyList(), quickCommands = a),
+                SyncSnapshot(emptyList(), emptyList(), quickCommands = b),
+            ),
+        )
+        val c = """[{"type":"group","name":"面板安装","expanded":false,"children":[{"name":"宝塔","command":"y","last_modified":1}],"last_modified":1}]"""
+        assertTrue(
+            !SyncHelper.snapshotBusinessEqual(
+                SyncSnapshot(emptyList(), emptyList(), quickCommands = a),
+                SyncSnapshot(emptyList(), emptyList(), quickCommands = c),
+            ),
+        )
+    }
+
+    @Test
+    fun planSyncSkipsWhenOnlySerializationDiffers() {
+        val local = SyncSnapshot(
+            connections = listOf(
+                Connection(
+                    id = "1", name = "s", host = "h", port = 22, username = "u",
+                    password = "p", authMethod = "password", proxyMode = "direct", lastModified = 100,
+                ),
+            ),
+            credentials = emptyList(),
+            quickCommands = """[{"type":"group","name":"g","expanded":true,"children":[],"last_modified":1}]""",
+            snapshotTime = 10,
+        )
+        val remote = SyncSnapshot(
+            connections = listOf(
+                Connection(
+                    id = "1", name = "s", host = "h", port = 22, username = "u",
+                    password = "p", authMethod = "password", privateKey = "", passphrase = "",
+                    proxyMode = "direct", proxyType = "socks5", proxyPort = 1080, lastModified = 100,
+                ),
+            ),
+            credentials = emptyList(),
+            quickCommands = """[{"type":"group","name":"g","expanded":false,"children":[],"last_modified":1}]""",
+            snapshotTime = 20,
+        )
+        val plan = SyncHelper.planSync(local, listOf(remote), lastSyncTime = 50, syncTime = 100)
+        assertEquals("skip", plan.action)
+        assertTrue(plan.uploadIndexes.isEmpty())
+    }
+
 }
