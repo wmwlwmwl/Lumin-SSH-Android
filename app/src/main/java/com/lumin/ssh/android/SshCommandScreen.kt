@@ -46,6 +46,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import java.util.ConcurrentModificationException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -107,6 +108,7 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
     var restoredBackgroundSessionId by remember(conn.id) { mutableStateOf<String?>(null) }
     var connecting by remember { mutableStateOf(false) }
     var closingPage by remember { mutableStateOf(false) }
+    var lastReconnectAtMs by remember(conn.id) { mutableStateOf(0L) }
     val context = LocalContext.current
 
     var showShortcutBar by remember { mutableStateOf(true) }
@@ -131,21 +133,34 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
         pendingSaveText = ""
     }
     val maxOutputHistoryBytes = 2 * 1024 * 1024
-    fun trimOutputHistory() {
+    fun trimOutputHistoryLocked() {
         var totalBytes = outputHistory.sumOf { it.size }
         while (totalBytes > maxOutputHistoryBytes && outputHistory.isNotEmpty()) {
             totalBytes -= outputHistory.removeAt(0).size
         }
     }
+    // reader 线程与主线程都会碰 history，必须串行
     fun addOutput(bytes: ByteArray) {
-        outputHistory.add(bytes)
-        trimOutputHistory()
+        synchronized(outputHistory) {
+            outputHistory.add(bytes)
+            trimOutputHistoryLocked()
+        }
+    }
+    fun outputHistoryBytes(): Int = synchronized(outputHistory) { outputHistory.sumOf { it.size } }
+    fun forEachOutputChunk(block: (ByteArray) -> Unit) {
+        synchronized(outputHistory) {
+            outputHistory.forEach(block)
+        }
     }
     val detachToBackground = {
         val currentShell = shell
         if (currentShell != null && !connecting) {
             detachedToBackground = true
-            val backgroundSessionId = BackgroundSshSessions.put(conn, currentShell, outputHistory)
+            val backgroundSessionId = BackgroundSshSessions.put(
+                conn,
+                currentShell,
+                synchronized(outputHistory) { ArrayList(outputHistory) },
+            )
             currentShell.setOnOutput { bytes, _ -> BackgroundSshSessions.append(backgroundSessionId, bytes) }
             SshBackgroundService.start(context, backgroundSessionId)
             onBack()
@@ -311,6 +326,7 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
     }
     val showKeyboardFromTerminal = {
         // 连接中/未就绪：点终端是误触，不要弹输入法
+        // 已就绪后意外断开：shellReady 仍为 true，可弹键盘回车重连
         if (!shellReady || connecting) {
             AppLog.d("Term", "ignore terminal tap: ready=$shellReady connecting=$connecting")
         } else {
@@ -335,32 +351,64 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             AppLog.d("Term", "local size ${safeCols}x$safeRows (no remote WINCH)")
         }
     }
+    // 与 PC 一致：断开/失败后按回车触发重连
+    fun requestReconnect() {
+        if (connecting) return
+        val current = stateRef.shell ?: shell
+        if (current?.isConnected == true) return
+        val now = System.currentTimeMillis()
+        // 防连按回车连撞 retryNonce
+        if (now - lastReconnectAtMs < 800) return
+        lastReconnectAtMs = now
+        AppLog.i("Term", "reconnect requested")
+        current?.close()
+        shell = null
+        stateRef.shell = null
+        shellReady = false
+        connecting = false
+        connectDetails.clear()
+        retryNonce++
+    }
+    fun isShellLive(): Boolean {
+        val current = stateRef.shell ?: shell
+        return current != null && shellReady && current.isConnected
+    }
     fun sendToShell(payload: String) {
         if (payload.isEmpty()) return
-        val currentShell = stateRef.shell ?: shell
-        if (currentShell == null || !shellReady) {
-            AppLog.w("Term", "send blocked shell=${currentShell != null} ready=$shellReady len=${payload.length}")
+        if (!isShellLive()) {
+            // 仅回车触发重连；其它输入在断开态忽略（对齐 PC）
+            if (!connecting && ('\r' in payload || '\n' in payload)) {
+                requestReconnect()
+            } else {
+                AppLog.w("Term", "send blocked live=false ready=$shellReady len=${payload.length}")
+            }
             return
         }
+        val currentShell = stateRef.shell ?: shell ?: return
         // 不打完整 payload（可能含密码）
         AppLog.d("Term", "send len=${payload.length} first=${payload.firstOrNull()?.code}")
         scope.launch {
             runCatching { currentShell.sendRaw(payload) }
                 .onFailure {
                     AppLog.e("Term", "send failed ready=$shellReady connected=${currentShell.isConnected}", it)
+                    // 不写 shellReady=false：保持可弹键盘，下次回车走 requestReconnect
                 }
         }
     }
     val safeSend: (String) -> Unit = { text -> sendToShell(text) }
     val sendPromptCommand = {
-        val line = command
-        if (line.isNotBlank()) {
-            command = ""
-            // 多行脚本：换行统一成 \r（PTY），末尾再补一个回车执行
-            val payload = line.replace("\r\n", "\n").replace('\n', '\r').let { body ->
-                if (body.endsWith("\r")) body else "$body\r"
+        if (!isShellLive()) {
+            if (!connecting) requestReconnect()
+        } else {
+            val line = command
+            if (line.isNotBlank()) {
+                command = ""
+                // 多行脚本：换行统一成 \r（PTY），末尾再补一个回车执行
+                val payload = line.replace("\r\n", "\n").replace('\n', '\r').let { body ->
+                    if (body.endsWith("\r")) body else "$body\r"
+                }
+                sendToShell(payload)
             }
-            sendToShell(payload)
         }
     }
 
@@ -400,7 +448,11 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             terminal = null
             val currentShell = shell
             if (!detachedToBackground && !closingPage && currentShell != null) {
-                val sessionId = BackgroundSshSessions.put(conn, currentShell, outputHistory)
+                val sessionId = BackgroundSshSessions.put(
+                    conn,
+                    currentShell,
+                    synchronized(outputHistory) { ArrayList(outputHistory) },
+                )
                 currentShell.setOnOutput { bytes, _ -> BackgroundSshSessions.append(sessionId, bytes) }
                 SshBackgroundService.start(context, sessionId)
                 detachedToBackground = true
@@ -454,6 +506,7 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             store = store,
             conn = sshConn,
             onOutput = { bytes, _ ->
+                // history 可在 reader 线程写（已同步）；UI 必须 post
                 addOutput(bytes)
                 val view = stateRef.terminal ?: terminal
                 if (view != null) {
@@ -466,8 +519,11 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             },
             resolveText = { id, args -> context.getString(id, *args) },
             onStatus = { detail ->
-                if (!closingPage) connectDetails.add(detail)
                 AppLog.i("Term", "status $detail")
+                // SnapshotStateList 只能在主线程改
+                scope.launch(Dispatchers.Main.immediate) {
+                    if (!closingPage) connectDetails.add(detail)
+                }
             },
             confirmHostKey = { confirmHostKey(it) },
         )
@@ -490,13 +546,17 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 shellReady = true
                 AppLog.i(
                     "Term",
-                    "shellReady=true terminal=${stateRef.terminal != null} historyBytes=${outputHistory.sumOf { it.size }}",
+                    "shellReady=true terminal=${stateRef.terminal != null} historyBytes=${outputHistoryBytes()}",
                 )
             }
         } catch (it: Throwable) {
             // 若取消时会话其实已连上，保留并标记就绪（日志里的 LeftCompositionCancellationException）
-            if (it is CancellationException && nextShell.isConnected && !closingPage) {
-                AppLog.w("Term", "connect cancelled after SSH up, keeping session")
+            // 连上后仅日志/状态列表并发异常时也保留，避免 MOTD 已写完又被关掉导致双份欢迎语
+            if (nextShell.isConnected && !closingPage && (
+                    it is CancellationException || it is ConcurrentModificationException
+                    )
+            ) {
+                AppLog.w("Term", "connect post-up exception, keeping session | ${it.javaClass.simpleName}: ${it.message}")
                 shell = nextShell
                 stateRef.shell = nextShell
                 shellReady = true
@@ -543,13 +603,15 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
     LaunchedEffect(terminal, shellReady) {
         val view = terminal ?: return@LaunchedEffect
         stateRef.terminal = view
-        if (!shellReady || outputHistory.isEmpty()) return@LaunchedEffect
+        val empty = synchronized(outputHistory) { outputHistory.isEmpty() }
+        if (!shellReady || empty) return@LaunchedEffect
         if (view.getTag(R.id.lumin_term_live_output) == true) {
             AppLog.d("Term", "skip history flush: view already has live output")
             return@LaunchedEffect
         }
-        AppLog.i("Term", "flush history chunks=${outputHistory.size}")
-        outputHistory.forEach { view.append(it) }
+        val chunkCount = synchronized(outputHistory) { outputHistory.size }
+        AppLog.i("Term", "flush history chunks=$chunkCount")
+        forEachOutputChunk { view.append(it) }
         view.setTag(R.id.lumin_term_live_output, true)
     }
 
