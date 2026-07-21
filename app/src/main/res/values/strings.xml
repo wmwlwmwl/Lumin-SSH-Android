@@ -124,7 +124,7 @@
     <string name="export_encrypted_reuse_recovery_password">导出密文（复用云端恢复密码）</string>
     <string name="export_encrypted_requires_recovery_password">导出密文（需先设置恢复密码）</string>
     <string name="export_encrypted_custom_password">导出密文（自定义密码）</string>
-    <string name="data_import_description">导入支持明文 JSON、密文 .lumin2 与旧 .enc；密文会先尝试本机云同步恢复密码，失败时提示输入密码。</string>
+    <string name="data_import_description">导入支持明文 JSON 与密文 .lumin2；密文会先尝试本机恢复密码，失败时提示输入密码。</string>
     <string name="import_from_file">从文件导入</string>
 
     <string name="credential_management">凭据管理</string>

@@ -3,7 +3,6 @@ package com.lumin.ssh.android
 import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.security.MessageDigest
 import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Base64
@@ -26,32 +25,11 @@ class RecoveryPasswordException(message: String = "恢复密码错误", cause: T
 class NoBackupException(message: String = "云端没有 Lumin 备份") : IllegalStateException(message)
 class RecoveryPasswordResetRequiredException(message: String = "旧密码和新密码都无法解密最新备份，需要确认重置恢复密码") : IllegalStateException(message)
 
-fun sha256(input: String): ByteArray = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
-
 // 与 PC 一致：20060102_150405.000_-0700 → 本地时区如 ...013_+0800
 // WebDAV 路径里的 + 由 encodeWebDavSegment 编成 %2B，列表解码用 decodeWebDavFileName 保留 +。
 fun backupTimestamp(): String = SimpleDateFormat("yyyyMMdd_HHmmss.SSS_Z", Locale.US).apply {
     timeZone = TimeZone.getDefault()
 }.format(Date())
-
-fun decryptDesktopHexSnapshot(hexText: String, key: ByteArray): String {
-    // 1.2.0+ 删除旧 hex 兼容。
-    val raw = hexText.trim()
-    require(raw.length % 2 == 0 && raw.matches(Regex("[0-9a-fA-F]+"))) { "旧版备份格式无效" }
-    val bytes = raw.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-    require(bytes.size >= 28) { "旧版备份长度不足" }
-    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-    cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
-    return String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
-}
-
-fun encryptDesktopHexSnapshot(text: String, key: ByteArray): String {
-    // 1.2.0+ 删除旧 hex 兼容：仅用于兼容读取测试。
-    val nonce = ByteArray(12).also { SecureRandom().nextBytes(it) }
-    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-    cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
-    return (nonce + cipher.doFinal(text.toByteArray(Charsets.UTF_8))).joinToString("") { "%02x".format(it.toInt() and 0xff) }
-}
 
 fun encryptLumin2(text: String, password: String): String = encryptLumin2WithSaltNonce(
     text,
@@ -109,18 +87,7 @@ fun parseSnapshotPayload(text: String, password: String?): SyncSnapshot {
                 throw SnapshotFormatException("LUMIN2 备份结构无效", e)
             }
         }
-        // 1.2.0+ 删除旧 hex 兼容：仅读取 PC 旧 .enc/hex。
-        trimmed.matches(Regex("[0-9a-fA-F]+")) -> {
-            if (password == null) throw RecoveryPasswordException("旧版加密备份需要恢复密码")
-            try {
-                decryptDesktopHexSnapshot(trimmed, sha256(password))
-            } catch (e: AEADBadTagException) {
-                throw RecoveryPasswordException("恢复密码错误", e)
-            } catch (e: Exception) {
-                throw SnapshotFormatException("旧版加密备份结构无效", e)
-            }
-        }
-        else -> throw SnapshotFormatException("不支持的备份格式")
+        else -> throw SnapshotFormatException("不支持的备份格式：仅支持明文 JSON 与 LUMIN2 密文")
     }
     return runCatching { syncSnapshotFromJson(JSONObject(decrypted)) }
         .getOrElse { throw SnapshotFormatException("备份解密成功，但内容不是有效 SyncSnapshot", it) }
@@ -129,6 +96,5 @@ fun parseSnapshotPayload(text: String, password: String?): SyncSnapshot {
 fun backupFileName(encrypted: Boolean): String = "connections_backup_${backupTimestamp()}.${if (encrypted) "lumin2" else "json"}"
 
 fun isBackupName(name: String): Boolean {
-    // 1.2.0+ 删除旧 hex 兼容：.enc 仅用于读取/清理旧备份，新写入使用 .lumin2。
-    return name.startsWith("connections_backup_") && (name.endsWith(".lumin2") || name.endsWith(".enc") || name.endsWith(".json"))
+    return name.startsWith("connections_backup_") && (name.endsWith(".lumin2") || name.endsWith(".json"))
 }

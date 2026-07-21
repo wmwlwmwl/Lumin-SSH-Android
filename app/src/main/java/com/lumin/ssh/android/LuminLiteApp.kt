@@ -142,10 +142,15 @@ fun LuminLiteApp(
                     store.saveProxyNodes(proxyNodes)
                     store.saveQuickCommandsRaw(quickCommandsRaw)
                     message = context.getString(R.string.import_completed_count, merged.imported, merged.skipped)
-                }.onFailure {
-                    pendingEncryptedImport = text
-                    importPassword = ""
-                    showImportPasswordDialog = true
+                }.onFailure { err ->
+                    // 仅密码类失败再弹窗；格式错误直接报错，避免无意义要密码
+                    if (err is RecoveryPasswordException) {
+                        pendingEncryptedImport = text
+                        importPassword = ""
+                        showImportPasswordDialog = true
+                    } else {
+                        message = context.getString(R.string.import_failed, context.userErrorText(err))
+                    }
                 }
             }.onFailure { message = context.getString(R.string.read_failed, context.userErrorText(it)) }
         }

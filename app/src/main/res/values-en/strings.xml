@@ -124,7 +124,7 @@
     <string name="export_encrypted_reuse_recovery_password">Export encrypted (reuse cloud recovery password)</string>
     <string name="export_encrypted_requires_recovery_password">Export encrypted (set recovery password first)</string>
     <string name="export_encrypted_custom_password">Export encrypted (custom password)</string>
-    <string name="data_import_description">Imports plain JSON, encrypted .lumin2, and legacy .enc. Encrypted files first try the local cloud recovery password, then prompt for a password if needed.</string>
+    <string name="data_import_description">Imports plain JSON and encrypted .lumin2. Encrypted files first try the local recovery password, then prompt for a password if needed.</string>
     <string name="import_from_file">Import from file</string>
 
     <string name="credential_management">Credential management</string>

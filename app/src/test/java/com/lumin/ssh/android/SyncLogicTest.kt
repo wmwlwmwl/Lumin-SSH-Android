@@ -190,16 +190,6 @@ class SyncLogicTest {
     }
 
     @Test
-    fun pcLegacyHexStillImports() {
-        val password = "legacy password"
-        val payload = """{"connections":[],"snapshot_time":1}"""
-        val encrypted = encryptDesktopHexSnapshot(payload, sha256(password))
-
-        assertEquals(payload, decryptDesktopHexSnapshot(encrypted, sha256(password)))
-        assertEquals(1, parseSnapshotPayload(encrypted, password).snapshotTime)
-    }
-
-    @Test
     fun explicitFtpsUsesTls12ForDataChannelCompatibility() {
         assertEquals(listOf("TLSv1.2"), FTP_TLS_PROTOCOLS.toList())
     }
@@ -213,10 +203,9 @@ class SyncLogicTest {
     }
 
     @Test
-    fun encryptedBackupNamesUseLumin2AndRecognizeLegacyEnc() {
+    fun encryptedBackupNamesUseLumin2Only() {
         assertTrue(backupFileName(true).endsWith(".lumin2"))
         assertTrue(isBackupName("connections_backup_20260713_120000.000_+0800.lumin2"))
-        assertTrue(isBackupName("connections_backup_20260713_120000.000_+0800.enc"))
         assertTrue(isBackupName("connections_backup_20260713_120000.000_+0800.json"))
     }
 
