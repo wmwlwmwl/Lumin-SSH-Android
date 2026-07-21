@@ -330,7 +330,7 @@ class TermuxTerminalSurface(context: Context) : View(context) {
     }
 
     /**
-     * 复制整个会话：打开瞬间快照；高度严格贴文字（无底部大白）；打开时在最新。
+     * 复制整个会话：高度贴内容；宽尽量贴屏；字号略小于终端，避免框比终端窄时过早折行。
      */
     private fun showCopyWholeSessionDialog(clipboard: ClipboardManager?) {
         val snapshot = emulator?.screen?.getTranscriptText().orEmpty()
@@ -339,25 +339,29 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
         val screenH = resources.displayMetrics.heightPixels
         val screenW = resources.displayMetrics.widthPixels
-        val padH = (8 * density).toInt()
-        val padV = (6 * density).toInt()
-        // 上限才封顶；短内容绝不用下限撑出空白
-        val contentMax = (screenH * 0.55f).toInt()
+        // 左右只留 8dp，尽量接近终端可视宽
+        val dialogW = (screenW - (8 * density).toInt()).coerceAtLeast(1)
+        val padH = (6 * density).toInt()
+        val padTop = (6 * density).toInt()
+        val chromeH = (120 * density).toInt()
+        val contentMax = (screenH - chromeH - (12 * density).toInt()).coerceAtLeast((screenH * 0.6f).toInt())
+        // 框比终端窄一点时，同字号会更早折行 → 略缩小字号，让每行更接近终端观感
+        val dialogTextPx = (textSizePx * 0.88f).coerceAtLeast(12f)
+        // 底部多留约 1 行高，避免滚到末尾时最后一行贴边/被裁切
+        val padBottom = (dialogTextPx + 8f * density).toInt()
 
         val editText = EditText(context).apply {
             setText(snapshot)
             setSelectAllOnFocus(false)
             setTextIsSelectable(true)
             typeface = Typeface.MONOSPACE
-            setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, textSizePx.toFloat())
+            setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, dialogTextPx)
             setTextColor(defaultForegroundColor)
-            // 透明底：避免文字短时出现大块着色空白
             setBackgroundColor(Color.TRANSPARENT)
-            setPadding(padH, padV, padH, padV)
+            setPadding(padH, padTop, padH, padBottom)
             isVerticalScrollBarEnabled = false
             minLines = 1
             maxLines = Integer.MAX_VALUE
-            // 禁止 EditText 自带 minHeight 撑空
             minimumHeight = 0
             setMinHeight(0)
             includeFontPadding = false
@@ -370,7 +374,6 @@ class TermuxTerminalSurface(context: Context) : View(context) {
             isFillViewport = false
             isVerticalScrollBarEnabled = true
             overScrollMode = android.view.View.OVER_SCROLL_IF_CONTENT_SCROLLS
-            // 去掉 ScrollView 默认额外边距
             clipToPadding = true
             setPadding(0, 0, 0, 0)
             addView(
@@ -384,7 +387,7 @@ class TermuxTerminalSurface(context: Context) : View(context) {
 
         val container = android.widget.LinearLayout(context).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding((4 * density).toInt(), 0, (4 * density).toInt(), 0)
+            setPadding(0, 0, 0, 0)
             addView(
                 scroll,
                 android.widget.LinearLayout.LayoutParams(
@@ -412,34 +415,40 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         dialog.setOnDismissListener { selectTextDialogOpen = false }
 
         dialog.show()
-        dialog.window?.setLayout(
-            (screenW * 0.92f).toInt().coerceAtMost(screenW - (24 * density).toInt()),
-            android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-        )
+        dialog.window?.setLayout(dialogW, android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
+        // 去掉 Material 默认 customView 左右大间距，否则有效内容区又窄一截
+        (container.parent as? android.view.View)?.setPadding(0, 0, 0, 0)
+        dialog.findViewById<android.view.View>(android.R.id.custom)?.setPadding(0, 0, 0, 0)
+        (dialog.findViewById<android.view.View>(android.R.id.custom)?.parent as? android.view.View)
+            ?.setPadding(0, 0, 0, 0)
 
-        var scrolledToEndOnce = false
-        fun fitHeightOnce() {
-            val width = scroll.width.takeIf { it > 0 } ?: (screenW * 0.92f).toInt()
-            val textW = (width - padH * 2).coerceAtLeast(1)
+        fun scrollToEnd() {
+            val child = scroll.getChildAt(0) ?: return
+            val y = (child.height - scroll.height + scroll.paddingBottom).coerceAtLeast(0)
+            scroll.scrollTo(0, y)
+        }
+
+        fun fitHeightOnce(thenScrollEnd: Boolean) {
+            val width = scroll.width.takeIf { it > 0 } ?: dialogW
             editText.measure(
-                android.view.View.MeasureSpec.makeMeasureSpec(textW, android.view.View.MeasureSpec.EXACTLY),
+                android.view.View.MeasureSpec.makeMeasureSpec(width.coerceAtLeast(1), android.view.View.MeasureSpec.EXACTLY),
                 android.view.View.MeasureSpec.makeMeasureSpec(0, android.view.View.MeasureSpec.UNSPECIFIED),
             )
-            // 严格贴文字高度；仅当超出上限才封顶可滚；无人为 min 撑空白
             val needed = editText.measuredHeight.coerceAtMost(contentMax).coerceAtLeast(1)
             val lp = scroll.layoutParams
             if (lp.height != needed) {
                 lp.height = needed
                 scroll.layoutParams = lp
             }
-            if (!scrolledToEndOnce) {
-                scrolledToEndOnce = true
-                scroll.post { scroll.fullScroll(android.view.View.FOCUS_DOWN) }
+            if (thenScrollEnd) {
+                // 高度应用后再滚到底，避免 fullScroll 时高度还是旧的
+                scroll.post { scrollToEnd() }
             }
         }
 
-        scroll.post { fitHeightOnce() }
-        scroll.postDelayed({ fitHeightOnce() }, 48)
+        scroll.post { fitHeightOnce(thenScrollEnd = true) }
+        scroll.postDelayed({ fitHeightOnce(thenScrollEnd = true) }, 48)
+        scroll.postDelayed({ scrollToEnd() }, 100)
     }
 
     private fun shareTranscript() {

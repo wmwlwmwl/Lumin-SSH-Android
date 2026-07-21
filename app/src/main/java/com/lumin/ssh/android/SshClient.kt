@@ -103,6 +103,8 @@ class SshShellSession(
     private fun text(id: Int, vararg args: Any): String = resolveText(id, args)
 
     suspend fun connect() = withContext(Dispatchers.IO) {
+        val t0 = System.currentTimeMillis()
+        fun elapsed() = System.currentTimeMillis() - t0
         AppLog.i("SSH", "connect begin ${conn.username}@${conn.host}:${conn.port} auth=${conn.authMethod} proxy=${conn.proxyMode}")
         onStatus(text(R.string.ssh_preparing_connection, conn.host, conn.port))
         if (conn.authMethod == "privateKey" && conn.privateKey.isBlank()) {
@@ -142,9 +144,10 @@ class SshShellSession(
         session = nextSession
         onStatus(text(R.string.ssh_connecting_socket))
         if (closed.get()) throw CancellationException(text(R.string.ssh_connection_cancelled))
+        val tSock = System.currentTimeMillis()
         runCatching { nextSession.connect(15000) }
             .getOrElse {
-                AppLog.e("SSH", "session.connect failed", it)
+                AppLog.e("SSH", "session.connect failed after ${elapsed()}ms", it)
                 if (hostKeyRejected.get() || it is CancellationException || it.cause is HostKeyRejectedException || it.message.orEmpty().contains("主机密钥未接受")) {
                     throw HostKeyRejectedException()
                 }
@@ -155,6 +158,7 @@ class SshShellSession(
                     throw IllegalStateException(text(R.string.ssh_connection_error, message.ifBlank { it.javaClass.simpleName }), it)
                 }
             }
+        AppLog.i("SSH", "session connected in ${System.currentTimeMillis() - tSock}ms (total ${elapsed()}ms), opening shell")
 
         if (hostKeyRejected.get()) {
             runCatching { nextSession.disconnect() }
@@ -167,8 +171,8 @@ class SshShellSession(
             nextSession.setServerAliveInterval(30_000)
             nextSession.serverAliveCountMax = 3
         }
-        AppLog.i("SSH", "session connected, opening shell")
         onStatus(text(R.string.ssh_opening_shell))
+        val tShell = System.currentTimeMillis()
         val nextChannel = nextSession.openChannel("shell") as ChannelShell
         nextChannel.setPty(true)
         // 仅 connect 前设一次保守尺寸；连上后再 setPtySize 在本机实测会断会话（含「只一次」）
@@ -177,12 +181,12 @@ class SshShellSession(
         val nextOutput = nextChannel.outputStream
         onStatus(text(R.string.ssh_connecting_channel))
         nextChannel.connect(15000)
+        AppLog.i("SSH", "shell ready in ${System.currentTimeMillis() - tShell}ms (total ${elapsed()}ms), start reader")
 
         session = nextSession
         channel = nextChannel
         output = nextOutput
         onStatus(text(R.string.ssh_waiting_output))
-        AppLog.i("SSH", "shell ready, start reader")
         startReader(nextInput)
     }
 

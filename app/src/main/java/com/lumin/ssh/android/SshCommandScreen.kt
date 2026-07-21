@@ -310,12 +310,17 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             }
     }
     val showKeyboardFromTerminal = {
-        if (System.currentTimeMillis() >= ignoreTerminalTapUntil) {
-            showShortcutBar = !showShortcutBar
+        // 连接中/未就绪：点终端是误触，不要弹输入法
+        if (!shellReady || connecting) {
+            AppLog.d("Term", "ignore terminal tap: ready=$shellReady connecting=$connecting")
+        } else {
+            if (System.currentTimeMillis() >= ignoreTerminalTapUntil) {
+                showShortcutBar = !showShortcutBar
+            }
+            keyboardOpenedByTerminal = true
+            focusRequester.requestFocus()
+            keyboard?.show()
         }
-        keyboardOpenedByTerminal = true
-        focusRequester.requestFocus()
-        keyboard?.show()
     }
     /** 只记本地尺寸；不远程 WINCH（见 SshShellSession.resize）。 */
     fun resizePtyOnce(columns: Int, rows: Int) {
