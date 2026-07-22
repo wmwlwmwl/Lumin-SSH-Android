@@ -16,6 +16,8 @@ interface SyncProvider {
         return restoreSnapshot(name, recoveryPassword)
     }
     fun backupConnections(connections: List<Connection>, credentials: List<Credential>, quickCommands: String, proxyNodes: List<ProxyNode>, aiProvidersRaw: String, aiGlobalSettingsRaw: String, snapshotTime: Long, maxBackups: Int, recoveryPassword: String = "", deletedConnections: List<SyncTombstone> = emptyList(), deletedCredentials: List<SyncTombstone> = emptyList(), tombstonePrunedBefore: Long = 0): String
+    /** 远端同步目录被删/404 时重建；对象存储可 no-op。 */
+    fun ensureRemoteDir() {}
 }
 
 data class SyncTrustInteraction(
@@ -583,8 +585,11 @@ object SyncHelper {
             local.deletedCredentials, remote.deletedCredentials,
             local.tombstonePrunedBefore, remotePrunedBefore,
         )
+        // 远程无备份时：本地为权威。
+        // 切勿用 lastSyncTime 推断「远程没有=本地应删」——否则空 /Lumin/ 会把未改过的服务器整表推断成墓碑后清空再上传。
+        val emptyRemoteLastSync = -1L
         val connMerge = if (snapshots.isEmpty()) {
-            mergeConnections(local.connections, emptyList(), lastSyncTime, baseConnTombs)
+            mergeConnections(local.connections, emptyList(), emptyRemoteLastSync, baseConnTombs)
         } else {
             mergeConnections(local.connections, remote.connections, lastSyncTime, baseConnTombs)
         }
@@ -593,7 +598,7 @@ object SyncHelper {
             connMerge.connections,
         )
         val credMerge = if (snapshots.isEmpty()) {
-            mergeCredentials(local.credentials, emptyList(), lastSyncTime, baseCredTombs)
+            mergeCredentials(local.credentials, emptyList(), emptyRemoteLastSync, baseCredTombs)
         } else {
             mergeCredentials(local.credentials, remote.credentials, lastSyncTime, baseCredTombs)
         }
@@ -855,6 +860,7 @@ object SyncHelper {
         } catch (_: NoBackupException) {
             null
         } catch (failure: Throwable) {
+            AppLog.e("Sync", "restoreLatestSnapshot failed provider=$provider", failure)
             return@withContext SyncOutcome("error", connections, credentials, quickCommandsRaw, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, failure)
         }
 
@@ -1093,6 +1099,153 @@ object SyncHelper {
         "ftp" -> store.loadFtpConfig().let { FtpSync(it.host, it.port, it.username, it.password, it.remoteDir, it.mode, store, trustInteraction?.confirmFtpsCertificate) to it.maxBackups }
         "sftp" -> store.loadSftpConfig().let { SftpSync(store, it.host, it.port, it.username, it.password, it.privateKey, it.passphrase, it.remoteDir, trustInteraction?.confirmHostKey) to it.maxBackups }
         else -> throw IllegalStateException("unknown provider: $provider")
+    }
+
+    /** 错误是否像「远程同步目录不存在/被删」——可提示重建目录。 */
+    fun looksLikeMissingRemoteDir(error: Throwable?): Boolean {
+        if (error == null) return false
+        val parts = buildList {
+            var cur: Throwable? = error
+            var depth = 0
+            while (cur != null && depth < 6) {
+                add(cur.message.orEmpty())
+                add(cur.javaClass.simpleName)
+                cur = cur.cause
+                depth++
+            }
+        }.joinToString(" ")
+        val msg = parts.lowercase()
+        return msg.contains("404")
+            || msg.contains("propfind")
+            || msg.contains("mkcol")
+            || msg.contains("no such file")
+            || msg.contains("not found")
+            || msg.contains("does not exist")
+            || msg.contains("目录不存在")
+            || msg.contains("列表失败")
+            || msg.contains("创建目录失败")
+            || msg.contains("读取远程目录")
+            || msg.contains("webdav 列表")
+            || msg.contains("webdav 上传")
+            || (msg.contains("webdav") && (msg.contains("403") || msg.contains("404")))
+    }
+
+    /**
+     * 重建当前同步目标的远程目录（WebDAV/SFTP/FTP），R2 无目录概念会跳过。
+     * 供「重新创建并重试」在再次 autoSync 前调用。
+     */
+    suspend fun ensureRemoteDirs(store: LocalStore, trustInteraction: SyncTrustInteraction? = null) = withContext(Dispatchers.IO) {
+        val names = providersFor(store)
+        val errors = mutableListOf<String>()
+        for (name in names) {
+            runCatching {
+                providerInstance(store, name, trustInteraction).first.ensureRemoteDir()
+            }.onFailure { errors += "$name: ${it.message ?: it}" }
+        }
+        if (errors.isNotEmpty()) {
+            throw IllegalStateException(errors.joinToString("; "))
+        }
+    }
+
+    /**
+     * 远程目录被删后的恢复路径：
+     * 1) 重建远程目录
+     * 2) **强制上传当前本地完整快照**（不读远程、不走墓碑跳过）
+     *
+     * 解决：仅 ensure 后再 autoSync 可能因 tombstone / 空列表异常导致「看起来成功/跳过但没上传」。
+     */
+    suspend fun ensureRemoteDirAndUploadLocal(
+        store: LocalStore,
+        connections: List<Connection>,
+        credentials: List<Credential>,
+        quickCommandsRaw: String,
+        proxyNodes: List<ProxyNode> = store.loadProxyNodes(),
+        aiProvidersRaw: String = store.loadAiProvidersRaw(),
+        aiGlobalSettingsRaw: String = store.loadAiGlobalSettingsRaw(),
+        trustInteraction: SyncTrustInteraction? = null,
+        recoveryPassword: String = store.loadRecoveryPassword(),
+    ): SyncOutcome = withContext(Dispatchers.IO) {
+        if (!syncRunning.compareAndSet(false, true)) {
+            return@withContext SyncOutcome(
+                "skip", connections, credentials, quickCommandsRaw, proxyNodes,
+                aiProvidersRaw, aiGlobalSettingsRaw, SyncInProgressException(),
+            )
+        }
+        try {
+            val names = providersFor(store)
+            if (names.isEmpty()) {
+                return@withContext SyncOutcome(
+                    "error", connections, credentials, quickCommandsRaw, proxyNodes,
+                    aiProvidersRaw, aiGlobalSettingsRaw, IllegalStateException("未配置同步后端"),
+                )
+            }
+            val targets = names.map { name ->
+                val (instance, maxBackups) = providerInstance(store, name, trustInteraction)
+                Triple(name, instance, maxBackups)
+            }
+            // 1) 重建目录
+            val dirErrors = mutableListOf<String>()
+            for ((name, instance, _) in targets) {
+                runCatching { instance.ensureRemoteDir() }
+                    .onFailure { dirErrors += "$name: ${it.message ?: it}" }
+            }
+            if (dirErrors.isNotEmpty()) {
+                return@withContext SyncOutcome(
+                    "error", connections, credentials, quickCommandsRaw, proxyNodes,
+                    aiProvidersRaw, aiGlobalSettingsRaw,
+                    IllegalStateException(dirErrors.joinToString("; ")),
+                )
+            }
+            // 2) 强制上传本地（含当前连接列表，即使远程为空/无备份）
+            val tombStore = store.loadTombstoneStore()
+            val syncTime = System.currentTimeMillis()
+            val snapshot = SyncSnapshot(
+                connections = connections.map { it.normalizedForSync() },
+                credentials = credentials.map { it.normalizedForSync() },
+                proxyNodes = proxyNodes,
+                quickCommands = quickCommandsRaw,
+                aiProvidersRaw = aiProvidersRaw,
+                aiGlobalSettingsRaw = aiGlobalSettingsRaw,
+                deletedConnections = filterTombstonesNotBefore(tombStore.connections, tombStore.prunedBefore),
+                deletedCredentials = filterTombstonesNotBefore(tombStore.credentials, tombStore.prunedBefore),
+                tombstonePrunedBefore = tombStore.prunedBefore,
+                snapshotTime = syncTime,
+            )
+            val uploaded = mutableListOf<Pair<SyncProvider, String>>()
+            val uploadErrors = mutableListOf<String>()
+            for ((name, instance, maxBackups) in targets) {
+                runCatching {
+                    val fileName = uploadSnapshot(instance, snapshot, recoveryPassword)
+                    uploaded += instance to fileName
+                    if (maxBackups > 0) runCatching { instance.pruneOldBackups(maxBackups) }
+                }.onFailure { uploadErrors += "$name: ${it.message ?: it}" }
+            }
+            if (uploaded.isEmpty()) {
+                return@withContext SyncOutcome(
+                    "error", connections, credentials, quickCommandsRaw, proxyNodes,
+                    aiProvidersRaw, aiGlobalSettingsRaw,
+                    IllegalStateException(uploadErrors.joinToString("; ").ifBlank { "上传失败" }),
+                )
+            }
+            // 本地快照时间与 last_sync 对齐，避免下次又当「需下载空云」
+            val primaryProvider = names.firstOrNull()
+            check(store.saveSnapshot(snapshot, syncTime, primaryProvider)) { "本地同步快照保存失败" }
+            store.saveLastSyncTimes(names, syncTime)
+            if (uploadErrors.isNotEmpty()) {
+                // 部分成功也返回 upload，并带上警告信息
+                return@withContext SyncOutcome(
+                    "upload", snapshot.connections, snapshot.credentials, snapshot.quickCommands,
+                    snapshot.proxyNodes, snapshot.aiProvidersRaw, snapshot.aiGlobalSettingsRaw,
+                    IllegalStateException("部分上传成功，失败：${uploadErrors.joinToString("; ")}"),
+                )
+            }
+            SyncOutcome(
+                "upload", snapshot.connections, snapshot.credentials, snapshot.quickCommands,
+                snapshot.proxyNodes, snapshot.aiProvidersRaw, snapshot.aiGlobalSettingsRaw,
+            )
+        } finally {
+            syncRunning.set(false)
+        }
     }
 
     private fun fetchSnapshot(store: LocalStore, provider: String, trustInteraction: SyncTrustInteraction?, recoveryPassword: String): SyncSnapshot =

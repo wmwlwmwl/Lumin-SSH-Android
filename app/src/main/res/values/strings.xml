@@ -26,6 +26,21 @@
     <string name="sync_already_current">已是最新，无需同步</string>
     <string name="sync_completed">同步完成（%1$s）</string>
     <string name="sync_failed">同步失败：%1$s</string>
+
+    <string name="cloud_sync_failed_title">云端同步失败</string>
+    <string name="remote_dir_missing_body">远程同步目录可能已被删除（也可能是暂时 404）。
+
+%1$s
+
+· 重试：不重建目录，再同步一次
+· 重新创建并重试：先建目录再上传本地数据
+
+本地数据不受影响。</string>
+    <string name="recreate_and_retry">重新创建并重试</string>
+    <string name="retry_only">重试</string>
+    <string name="recreate_remote_dir_failed">重建远程目录失败：%1$s</string>
+    <string name="remote_dir_recreated_sync_ok">远程目录已重建并同步成功</string>
+    <string name="ignore">忽略</string>
     <string name="sync_requires_recovery_password">同步需要恢复密码</string>
 
     <string name="about_title">关于</string>

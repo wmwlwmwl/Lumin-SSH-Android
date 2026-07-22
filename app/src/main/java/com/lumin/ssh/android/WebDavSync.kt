@@ -116,7 +116,9 @@ class WebDavSync(
 
     override fun listBackupNames(): List<String> {
         val target = joinUrl(url, normalizedRemotePath)
-        val withBody = runCatching { propfindBody(target, true) }.getOrDefault("")
+        // 目录存在但为空 → 返回 emptyList()（无备份，可上传本地）
+        // 目录不存在 (404) → 必须抛错，前端才能弹出「重新创建并重试」
+        val withBody = propfindBody(target, true)
         var names = parseBackupNames(withBody)
         if (names.isEmpty()) {
             val emptyBody = propfindBody(target, false)
@@ -140,6 +142,10 @@ class WebDavSync(
             .method("PROPFIND", body)
         if (withXmlBody) builder.header("Content-Type", "text/xml; charset=utf-8")
         client.newCall(builder.build()).execute().use { response ->
+            // 404：同步目录本身不存在（被删），不是“有目录但无备份文件”
+            if (response.code == 404) {
+                throw IllegalStateException("WebDAV 列表失败: HTTP 404（远程目录可能不存在: $normalizedRemotePath）")
+            }
             if (!response.isSuccessful && response.code != 207) {
                 throw IllegalStateException("WebDAV 列表失败: HTTP ${response.code}")
             }
@@ -191,7 +197,7 @@ class WebDavSync(
         }
     }
 
-    private fun ensureRemoteDir() {
+    override fun ensureRemoteDir() {
         var current = "/"
         normalizedRemotePath.trim('/').split('/').filter { it.isNotEmpty() }.forEach { part ->
             current = joinPath(current, part) + "/"
@@ -201,6 +207,7 @@ class WebDavSync(
                 .method("MKCOL", "".toRequestBody(null))
                 .build()
             client.newCall(request).execute().use { response ->
+                // 201 创建成功；200/204 部分实现；405 已存在
                 if (response.code !in 200..299 && response.code != 405) {
                     throw IllegalStateException("WebDAV 创建目录失败: HTTP ${response.code}")
                 }

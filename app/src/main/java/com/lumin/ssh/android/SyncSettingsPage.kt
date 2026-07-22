@@ -82,6 +82,9 @@ fun SyncSettingsPage(
     var pendingPreviewFailedMessage by remember { mutableStateOf<String?>(null) }
     var pendingPreviewFailedContinue by remember { mutableStateOf<(() -> Unit)?>(null) }
     var pendingPreviewFailedCancel by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingRemoteDirMissingError by remember { mutableStateOf<String?>(null) }
+    var pendingRemoteDirRecreate by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingRemoteDirCancel by remember { mutableStateOf<(() -> Unit)?>(null) }
     var tombstoneDays by remember { mutableStateOf(30) }
     var tombstoneStats by remember { mutableStateOf(store.loadTombstoneStats()) }
     val recoveryPassword = store.loadRecoveryPassword()
@@ -419,7 +422,72 @@ fun SyncSettingsPage(
                                     )
                                     syncing = false
                                     if (outcome?.failure != null) {
-                                        onMessage(context.getString(R.string.sync_failed, context.userErrorText(outcome.failure)))
+                                        val fail = outcome.failure
+                                        val detail = listOfNotNull(fail.message, context.userErrorText(fail))
+                                            .joinToString(" | ")
+                                        // 用原始异常 + 展示文案一起判断，避免 userErrorText 丢掉 404
+                                        val looksMissing = SyncHelper.looksLikeMissingRemoteDir(fail)
+                                            || detail.contains("404", ignoreCase = true)
+                                            || detail.contains("列表失败")
+                                            || detail.contains("WebDAV")
+                                        if (looksMissing) {
+                                            val recreate = kotlinx.coroutines.CompletableDeferred<Boolean>()
+                                            pendingRemoteDirMissingError = detail
+                                            pendingRemoteDirRecreate = { recreate.complete(true) }
+                                            pendingRemoteDirCancel = { recreate.complete(false) }
+                                            if (recreate.await()) {
+                                                syncing = true
+                                                // 重建后强制上传当前本地（含 8 台服务器），不走可能被跳过的 autoSync
+                                                val forceOutcome = runCatching {
+                                                    SyncHelper.ensureRemoteDirAndUploadLocal(
+                                                        store,
+                                                        connections,
+                                                        credentials,
+                                                        quickCommandsRaw,
+                                                        proxyNodes,
+                                                        aiProvidersRaw,
+                                                        aiGlobalSettingsRaw,
+                                                        trustInteraction,
+                                                    )
+                                                }.getOrElse {
+                                                    SyncHelper.SyncOutcome(
+                                                        "error", connections, credentials, quickCommandsRaw, proxyNodes,
+                                                        aiProvidersRaw, aiGlobalSettingsRaw, it,
+                                                    )
+                                                }
+                                                syncing = false
+                                                if (forceOutcome.failure != null && forceOutcome.action == "error") {
+                                                    onMessage(
+                                                        context.getString(
+                                                            R.string.recreate_remote_dir_failed,
+                                                            context.userErrorText(forceOutcome.failure),
+                                                        ),
+                                                    )
+                                                } else {
+                                                    onSynced(
+                                                        forceOutcome.mergedConnections,
+                                                        forceOutcome.mergedCredentials,
+                                                        forceOutcome.mergedQuickCommands,
+                                                        forceOutcome.mergedProxyNodes,
+                                                        forceOutcome.aiProvidersRaw,
+                                                        forceOutcome.aiGlobalSettingsRaw,
+                                                    )
+                                                    tombstoneStats = store.loadTombstoneStats()
+                                                    if (forceOutcome.failure != null) {
+                                                        onMessage(
+                                                            context.getString(
+                                                                R.string.sync_failed,
+                                                                context.userErrorText(forceOutcome.failure),
+                                                            ),
+                                                        )
+                                                    } else {
+                                                        onMessage(context.getString(R.string.remote_dir_recreated_sync_ok))
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            onMessage(context.getString(R.string.sync_failed, context.userErrorText(fail)))
+                                        }
                                     } else if (outcome?.action == "skip") {
                                         onSynced(outcome.mergedConnections, outcome.mergedCredentials, outcome.mergedQuickCommands, outcome.mergedProxyNodes, outcome.aiProvidersRaw, outcome.aiGlobalSettingsRaw)
                                         tombstoneStats = store.loadTombstoneStats()
@@ -438,16 +506,78 @@ fun SyncSettingsPage(
                                 val previewErr = previewResult.exceptionOrNull()
                                 if (previewErr != null) {
                                     syncing = false
-                                    val go = kotlinx.coroutines.CompletableDeferred<Boolean>()
-                                    pendingPreviewFailedContinue = { go.complete(true) }
-                                    pendingPreviewFailedCancel = { go.complete(false) }
-                                    pendingPreviewFailedMessage = context.getString(
-                                        R.string.sync_preview_failed_continue,
-                                        context.userErrorText(previewErr),
-                                    )
-                                    if (!go.await()) return@launch
-                                    syncing = true
-                                    runMergeSync()
+                                    val detail = listOfNotNull(previewErr.message, context.userErrorText(previewErr))
+                                        .joinToString(" | ")
+                                    val looksMissing = SyncHelper.looksLikeMissingRemoteDir(previewErr)
+                                        || detail.contains("404", ignoreCase = true)
+                                        || detail.contains("列表失败")
+                                        || detail.contains("WebDAV")
+                                    if (looksMissing) {
+                                        val recreate = kotlinx.coroutines.CompletableDeferred<Boolean>()
+                                        pendingRemoteDirMissingError = detail
+                                        pendingRemoteDirRecreate = { recreate.complete(true) }
+                                        pendingRemoteDirCancel = { recreate.complete(false) }
+                                        if (recreate.await()) {
+                                            syncing = true
+                                            val forceOutcome = runCatching {
+                                                SyncHelper.ensureRemoteDirAndUploadLocal(
+                                                    store,
+                                                    connections,
+                                                    credentials,
+                                                    quickCommandsRaw,
+                                                    proxyNodes,
+                                                    aiProvidersRaw,
+                                                    aiGlobalSettingsRaw,
+                                                    trustInteraction,
+                                                )
+                                            }.getOrElse {
+                                                SyncHelper.SyncOutcome(
+                                                    "error", connections, credentials, quickCommandsRaw, proxyNodes,
+                                                    aiProvidersRaw, aiGlobalSettingsRaw, it,
+                                                )
+                                            }
+                                            syncing = false
+                                            if (forceOutcome.failure != null && forceOutcome.action == "error") {
+                                                onMessage(
+                                                    context.getString(
+                                                        R.string.recreate_remote_dir_failed,
+                                                        context.userErrorText(forceOutcome.failure),
+                                                    ),
+                                                )
+                                            } else {
+                                                onSynced(
+                                                    forceOutcome.mergedConnections,
+                                                    forceOutcome.mergedCredentials,
+                                                    forceOutcome.mergedQuickCommands,
+                                                    forceOutcome.mergedProxyNodes,
+                                                    forceOutcome.aiProvidersRaw,
+                                                    forceOutcome.aiGlobalSettingsRaw,
+                                                )
+                                                tombstoneStats = store.loadTombstoneStats()
+                                                if (forceOutcome.failure != null) {
+                                                    onMessage(
+                                                        context.getString(
+                                                            R.string.sync_failed,
+                                                            context.userErrorText(forceOutcome.failure),
+                                                        ),
+                                                    )
+                                                } else {
+                                                    onMessage(context.getString(R.string.remote_dir_recreated_sync_ok))
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        val go = kotlinx.coroutines.CompletableDeferred<Boolean>()
+                                        pendingPreviewFailedContinue = { go.complete(true) }
+                                        pendingPreviewFailedCancel = { go.complete(false) }
+                                        pendingPreviewFailedMessage = context.getString(
+                                            R.string.sync_preview_failed_continue,
+                                            context.userErrorText(previewErr),
+                                        )
+                                        if (!go.await()) return@launch
+                                        syncing = true
+                                        runMergeSync()
+                                    }
                                 } else if (preview != null && preview.hasConflicts) {
                                     syncing = false
                                     pendingSyncDeleteContinue = {
@@ -505,6 +635,134 @@ fun SyncSettingsPage(
                     pendingPreviewFailedContinue = null
                     pendingPreviewFailedCancel = null
                 }) { Text(stringResource(R.string.cancel)) }
+            },
+        )
+    }
+
+    pendingRemoteDirMissingError?.let { errMsg ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingRemoteDirCancel?.invoke()
+                pendingRemoteDirMissingError = null
+                pendingRemoteDirRecreate = null
+                pendingRemoteDirCancel = null
+            },
+            title = { Text(stringResource(R.string.cloud_sync_failed_title)) },
+            text = {
+                Text(
+                    context.getString(R.string.remote_dir_missing_body, errMsg),
+                    color = LuminColors.Danger,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val cont = pendingRemoteDirRecreate
+                    pendingRemoteDirMissingError = null
+                    pendingRemoteDirRecreate = null
+                    pendingRemoteDirCancel = null
+                    cont?.invoke()
+                }) { Text(stringResource(R.string.recreate_and_retry)) }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        pendingRemoteDirCancel?.invoke()
+                        pendingRemoteDirMissingError = null
+                        pendingRemoteDirRecreate = null
+                        pendingRemoteDirCancel = null
+                    }) { Text(stringResource(R.string.ignore)) }
+                    TextButton(onClick = {
+                        // 设置页：重试 = 关闭弹窗后再次走合并同步入口（不重建目录）
+                        pendingRemoteDirMissingError = null
+                        pendingRemoteDirRecreate = null
+                        pendingRemoteDirCancel = null
+                        scope.launch {
+                            syncing = true
+                            try {
+                                val outcome = onSync(
+                                    {
+                                        SyncHelper.autoSync(
+                                            store, connections, credentials, quickCommandsRaw,
+                                            proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, trustInteraction,
+                                        )
+                                    },
+                                    { password ->
+                                        SyncHelper.syncWithRecoveryPassword(
+                                            store, password, connections, credentials, quickCommandsRaw,
+                                            proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, trustInteraction,
+                                        )
+                                    },
+                                )
+                                syncing = false
+                                if (outcome?.failure != null) {
+                                    val fail = outcome.failure
+                                    val detail = listOfNotNull(fail.message, context.userErrorText(fail))
+                                        .joinToString(" | ")
+                                    val looksMissing = SyncHelper.looksLikeMissingRemoteDir(fail)
+                                        || detail.contains("404", ignoreCase = true)
+                                        || detail.contains("列表失败")
+                                        || detail.contains("WebDAV")
+                                    if (looksMissing) {
+                                        pendingRemoteDirMissingError = detail
+                                        // 仅重建路径：用户已试过普通重试
+                                        pendingRemoteDirRecreate = {
+                                            scope.launch {
+                                                syncing = true
+                                                val forceOutcome = runCatching {
+                                                    SyncHelper.ensureRemoteDirAndUploadLocal(
+                                                        store, connections, credentials, quickCommandsRaw,
+                                                        proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, trustInteraction,
+                                                    )
+                                                }.getOrElse {
+                                                    SyncHelper.SyncOutcome(
+                                                        "error", connections, credentials, quickCommandsRaw,
+                                                        proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw, it,
+                                                    )
+                                                }
+                                                syncing = false
+                                                if (forceOutcome.failure != null && forceOutcome.action == "error") {
+                                                    onMessage(
+                                                        context.getString(
+                                                            R.string.recreate_remote_dir_failed,
+                                                            context.userErrorText(forceOutcome.failure),
+                                                        ),
+                                                    )
+                                                } else {
+                                                    onSynced(
+                                                        forceOutcome.mergedConnections,
+                                                        forceOutcome.mergedCredentials,
+                                                        forceOutcome.mergedQuickCommands,
+                                                        forceOutcome.mergedProxyNodes,
+                                                        forceOutcome.aiProvidersRaw,
+                                                        forceOutcome.aiGlobalSettingsRaw,
+                                                    )
+                                                    tombstoneStats = store.loadTombstoneStats()
+                                                    onMessage(context.getString(R.string.remote_dir_recreated_sync_ok))
+                                                }
+                                            }
+                                        }
+                                        pendingRemoteDirCancel = { }
+                                    } else {
+                                        onMessage(context.getString(R.string.sync_failed, context.userErrorText(fail)))
+                                    }
+                                } else if (outcome != null) {
+                                    onSynced(
+                                        outcome.mergedConnections,
+                                        outcome.mergedCredentials,
+                                        outcome.mergedQuickCommands,
+                                        outcome.mergedProxyNodes,
+                                        outcome.aiProvidersRaw,
+                                        outcome.aiGlobalSettingsRaw,
+                                    )
+                                    tombstoneStats = store.loadTombstoneStats()
+                                    onMessage(context.getString(R.string.sync_completed, outcome.action))
+                                }
+                            } finally {
+                                syncing = false
+                            }
+                        }
+                    }) { Text(stringResource(R.string.retry_only)) }
+                }
             },
         )
     }

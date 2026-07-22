@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,6 +32,8 @@ import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
 @Composable
@@ -72,7 +76,13 @@ fun LuminLiteApp(
         sync: suspend () -> SyncHelper.SyncOutcome,
         retry: suspend (String) -> SyncHelper.SyncOutcome,
     ): SyncHelper.SyncOutcome? {
-        if (syncBusy) return null
+        // 正在同步时返回可识别的 skip，避免 null 导致上层既不弹窗也不 Toast
+        if (syncBusy) {
+            return SyncHelper.SyncOutcome(
+                "skip", connections, credentials, quickCommandsRaw, proxyNodes,
+                aiProvidersRaw, aiGlobalSettingsRaw, SyncInProgressException(),
+            )
+        }
         syncBusy = true
         try {
             var outcome = sync()
@@ -99,7 +109,10 @@ fun LuminLiteApp(
         }
     }
     fun applySyncOutcome(outcome: SyncHelper.SyncOutcome, expectedQuickCommands: String? = null) {
-        if (outcome.failure != null || expectedQuickCommands != null && store.loadQuickCommandsRaw() != expectedQuickCommands) return
+        // 失败/需手动确认：不要用空合并结果覆盖界面上的服务器列表
+        if (outcome.failure != null) return
+        if (outcome.needsManualTombstoneConfirm) return
+        if (expectedQuickCommands != null && store.loadQuickCommandsRaw() != expectedQuickCommands) return
         connections = outcome.mergedConnections
         credentials = outcome.mergedCredentials
         proxyNodes = outcome.mergedProxyNodes
@@ -107,10 +120,152 @@ fun LuminLiteApp(
         aiProvidersRaw = outcome.aiProvidersRaw
         aiGlobalSettingsRaw = outcome.aiGlobalSettingsRaw
     }
+    var pendingRemoteDirMissingError by remember { mutableStateOf<String?>(null) }
+    var pendingRemoteDirRecreate by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingRemoteDirRetry by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingRemoteDirCancel by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    fun showRemoteDirMissingDialog(detail: String) {
+        AppLog.w("SyncUI", "showRemoteDirMissingDialog: $detail")
+        // 用当前磁盘最新连接列表，避免内存/界面状态过期
+        val conns = store.loadConnections().ifEmpty { connections }
+        val creds = store.loadCredentials().ifEmpty { credentials }
+        val quick = store.loadQuickCommandsRaw().ifBlank { quickCommandsRaw }
+        val proxies = store.loadProxyNodes().ifEmpty { proxyNodes }
+        val aiProviders = store.loadAiProvidersRaw().ifBlank { aiProvidersRaw }
+        val aiGlobal = store.loadAiGlobalSettingsRaw().ifBlank { aiGlobalSettingsRaw }
+        pendingRemoteDirMissingError = detail.ifBlank { "远程同步目录可能已删除 (404)" }
+
+        // 重新创建并重试：建目录 + 强制上传本地
+        pendingRemoteDirRecreate = {
+            scope.launch {
+                syncBusy = true
+                try {
+                    AppLog.i("SyncUI", "recreate_and_retry clicked localConns=${conns.size}")
+                    val forceOutcome = runCatching {
+                        SyncHelper.ensureRemoteDirAndUploadLocal(
+                            store, conns, creds, quick, proxies, aiProviders, aiGlobal,
+                        )
+                    }.getOrElse {
+                        SyncHelper.SyncOutcome(
+                            "error", conns, creds, quick, proxies, aiProviders, aiGlobal, it,
+                        )
+                    }
+                    forceOutcome.let(::applySyncOutcome)
+                    if (forceOutcome.failure != null && forceOutcome.action == "error") {
+                        message = context.getString(
+                            R.string.recreate_remote_dir_failed,
+                            context.userErrorText(forceOutcome.failure),
+                        )
+                    } else if (forceOutcome.failure != null) {
+                        message = context.getString(
+                            R.string.sync_failed,
+                            context.userErrorText(forceOutcome.failure),
+                        )
+                    } else {
+                        message = context.getString(R.string.remote_dir_recreated_sync_ok)
+                    }
+                } finally {
+                    syncBusy = false
+                }
+            }
+        }
+
+        // 重试：不重建目录，普通 autoSync（应对暂时 404 误判）
+        pendingRemoteDirRetry = {
+            scope.launch {
+                AppLog.i("SyncUI", "retry_only clicked localConns=${conns.size}")
+                val outcome = syncWithPasswordPrompt(
+                    sync = {
+                        SyncHelper.autoSync(
+                            store, conns, creds, quick, proxies, aiProviders, aiGlobal,
+                        )
+                    },
+                    retry = { password ->
+                        SyncHelper.syncWithRecoveryPassword(
+                            store, password, conns, creds, quick, proxies, aiProviders, aiGlobal,
+                        )
+                    },
+                )
+                outcome?.let(::applySyncOutcome)
+                if (outcome?.failure != null) {
+                    // 仍失败则再弹创建对话框（可能真是目录没了）
+                    // 注意：此处用局部逻辑，避免 forward-reference 本地函数
+                    val fail = outcome.failure
+                    val d = listOfNotNull(fail.message, context.userErrorText(fail))
+                        .filter { it.isNotBlank() }.distinct().joinToString(" | ")
+                    val looksMissing = SyncHelper.looksLikeMissingRemoteDir(fail)
+                        || d.contains("404")
+                        || d.contains("列表失败")
+                        || d.contains("远程目录")
+                        || d.contains("不存在")
+                        || d.contains("not found", ignoreCase = true)
+                    if (looksMissing) {
+                        showRemoteDirMissingDialog(d)
+                    } else {
+                        message = context.getString(R.string.sync_failed, context.userErrorText(fail))
+                    }
+                } else if (outcome != null) {
+                    message = context.getString(R.string.sync_completed, outcome.action)
+                }
+            }
+        }
+
+        pendingRemoteDirCancel = { }
+        // 同时 toast，避免用户以为「什么都没发生」
+        message = context.getString(R.string.cloud_sync_failed_title) + ": " + pendingRemoteDirMissingError
+    }
+
     fun reportAutomaticSyncFailure(outcome: SyncHelper.SyncOutcome?) {
-        val failure = outcome?.failure ?: return
+        AppLog.i(
+            "SyncUI",
+            "reportAutomaticSyncFailure outcome=${outcome?.action} fail=${outcome?.failure?.javaClass?.simpleName}:${outcome?.failure?.message} tombstone=${outcome?.needsManualTombstoneConfirm}",
+        )
+        if (outcome == null) {
+            AppLog.w("SyncUI", "reportAutomaticSyncFailure: outcome=null")
+            return
+        }
+        // 墓碑需手动确认：只 toast，不走远程目录弹窗
+        if (outcome.needsManualTombstoneConfirm) {
+            message = context.getString(R.string.sync_tombstone_needs_manual)
+            return
+        }
+        val failure = outcome.failure
+        if (failure == null) {
+            // 无 failure 的 skip/success 不提示
+            if (outcome.action == "error") {
+                message = context.getString(R.string.cloud_sync_failed_title)
+            }
+            return
+        }
         if (failure is RecoveryPasswordException) return
-        val detail = context.userErrorText(failure)
+        // 同步进行中：轻提示即可
+        if (failure is SyncInProgressException) {
+            message = context.getString(R.string.sync_in_progress)
+            return
+        }
+        val detail = listOfNotNull(failure.message, context.userErrorText(failure))
+            .filter { it.isNotBlank() }
+            .distinct()
+            .joinToString(" | ")
+        // 任何 404 / 列表失败 / 目录不存在，都弹重建（不要依赖 WebDAV 字样）
+        val looksMissing = SyncHelper.looksLikeMissingRemoteDir(failure)
+            || detail.contains("404")
+            || detail.contains("列表失败")
+            || detail.contains("远程目录")
+            || detail.contains("不存在")
+            || detail.contains("PROPFIND", ignoreCase = true)
+            || detail.contains("not found", ignoreCase = true)
+            || detail.contains("no such file", ignoreCase = true)
+            || (detail.contains("WebDAV", ignoreCase = true) && (
+                detail.contains("403") || detail.contains("404") || detail.contains("失败")
+                ))
+        AppLog.i("SyncUI", "looksMissing=$looksMissing detail=$detail")
+        if (looksMissing) {
+            showRemoteDirMissingDialog(detail)
+            return
+        }
+        // 其它失败：至少 Toast，不能静默
         message = context.getString(R.string.automatic_sync_stopped, detail)
     }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
@@ -162,10 +317,47 @@ fun LuminLiteApp(
         }
     }
     LaunchedEffect(Unit) {
-        if (runStartupSync && store.loadAutoSyncEnabled()) {
-            val outcome = syncWithPasswordPrompt(
-                sync = { SyncHelper.autoSync(store, connections, credentials, quickCommandsRaw, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw) },
-                retry = { password -> SyncHelper.syncWithRecoveryPassword(store, password, connections, credentials, quickCommandsRaw, proxyNodes, aiProvidersRaw, aiGlobalSettingsRaw) },
+        val autoOn = store.loadAutoSyncEnabled()
+        AppLog.i("SyncUI", "startupSync runStartupSync=$runStartupSync autoSync=$autoOn")
+        if (runStartupSync && autoOn) {
+            // 稍晚于首帧，避免和其它启动逻辑抢 syncBusy；失败必须弹窗
+            delay(800)
+            val outcome = try {
+                syncWithPasswordPrompt(
+                    sync = {
+                        SyncHelper.autoSync(
+                            store,
+                            store.loadConnections().ifEmpty { connections },
+                            store.loadCredentials().ifEmpty { credentials },
+                            store.loadQuickCommandsRaw().ifBlank { quickCommandsRaw },
+                            store.loadProxyNodes().ifEmpty { proxyNodes },
+                            store.loadAiProvidersRaw().ifBlank { aiProvidersRaw },
+                            store.loadAiGlobalSettingsRaw().ifBlank { aiGlobalSettingsRaw },
+                        )
+                    },
+                    retry = { password ->
+                        SyncHelper.syncWithRecoveryPassword(
+                            store,
+                            password,
+                            store.loadConnections().ifEmpty { connections },
+                            store.loadCredentials().ifEmpty { credentials },
+                            store.loadQuickCommandsRaw().ifBlank { quickCommandsRaw },
+                            store.loadProxyNodes().ifEmpty { proxyNodes },
+                            store.loadAiProvidersRaw().ifBlank { aiProvidersRaw },
+                            store.loadAiGlobalSettingsRaw().ifBlank { aiGlobalSettingsRaw },
+                        )
+                    },
+                )
+            } catch (t: Throwable) {
+                AppLog.e("SyncUI", "startupSync threw", t)
+                SyncHelper.SyncOutcome(
+                    "error", connections, credentials, quickCommandsRaw, proxyNodes,
+                    aiProvidersRaw, aiGlobalSettingsRaw, t,
+                )
+            }
+            AppLog.i(
+                "SyncUI",
+                "startupSync done action=${outcome?.action} fail=${outcome?.failure?.message}",
             )
             outcome?.let(::applySyncOutcome)
             reportAutomaticSyncFailure(outcome)
@@ -495,6 +687,62 @@ fun LuminLiteApp(
         AboutPage(
             onBack = { navigateBack(AppScreen.Settings) },
             knownUpdate = knownUpdateInfo,
+        )
+    }
+
+    // 放在所有 Screen 分支之后，避免被 About/Settings 等页面盖住
+    pendingRemoteDirMissingError?.let { errMsg ->
+        LaunchedEffect(errMsg) {
+            AppLog.i("SyncUI", "AlertDialog visible for remote dir missing")
+        }
+        AlertDialog(
+            onDismissRequest = {
+                pendingRemoteDirCancel?.invoke()
+                pendingRemoteDirMissingError = null
+                pendingRemoteDirRecreate = null
+                pendingRemoteDirRetry = null
+                pendingRemoteDirCancel = null
+            },
+            title = { Text(stringResource(R.string.cloud_sync_failed_title)) },
+            text = {
+                Text(context.getString(R.string.remote_dir_missing_body, errMsg))
+            },
+            // Material3: confirm 在右；放「重新创建」作为主操作
+            confirmButton = {
+                TextButton(onClick = {
+                    val cont = pendingRemoteDirRecreate
+                    pendingRemoteDirMissingError = null
+                    pendingRemoteDirRecreate = null
+                    pendingRemoteDirRetry = null
+                    pendingRemoteDirCancel = null
+                    cont?.invoke()
+                }) { Text(stringResource(R.string.recreate_and_retry)) }
+            },
+            // dismiss 区放「忽略 + 重试」，与 PC 三按钮一致
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        pendingRemoteDirCancel?.invoke()
+                        pendingRemoteDirMissingError = null
+                        pendingRemoteDirRecreate = null
+                        pendingRemoteDirRetry = null
+                        pendingRemoteDirCancel = null
+                    }) { Text(stringResource(R.string.ignore)) }
+                    TextButton(onClick = {
+                        val cont = pendingRemoteDirRetry
+                        pendingRemoteDirMissingError = null
+                        pendingRemoteDirRecreate = null
+                        pendingRemoteDirRetry = null
+                        pendingRemoteDirCancel = null
+                        cont?.invoke()
+                    }) { Text(stringResource(R.string.retry_only)) }
+                }
+            },
+            properties = androidx.compose.ui.window.DialogProperties(
+                dismissOnBackPress = true,
+                dismissOnClickOutside = false,
+                usePlatformDefaultWidth = true,
+            ),
         )
     }
 

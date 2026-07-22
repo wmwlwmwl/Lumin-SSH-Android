@@ -26,6 +26,20 @@
     <string name="sync_already_current">Already up to date</string>
     <string name="sync_completed">Sync completed (%1$s)</string>
     <string name="sync_failed">Sync failed: %1$s</string>
+    <string name="cloud_sync_failed_title">Cloud sync failed</string>
+    <string name="remote_dir_missing_body">The remote sync folder may have been deleted (or this may be a temporary 404).
+
+%1$s
+
+· Retry: sync again without recreating the folder
+· Recreate and retry: create the folder, then upload local data
+
+Local data is unaffected.</string>
+    <string name="recreate_and_retry">Recreate and retry</string>
+    <string name="retry_only">Retry</string>
+    <string name="recreate_remote_dir_failed">Failed to recreate remote folder: %1$s</string>
+    <string name="remote_dir_recreated_sync_ok">Remote folder recreated and sync succeeded</string>
+    <string name="ignore">Ignore</string>
     <string name="sync_requires_recovery_password">Sync requires a recovery password</string>
 
     <string name="about_title">About</string>

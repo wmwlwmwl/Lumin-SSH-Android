@@ -165,6 +165,15 @@ class FtpSync(
         }
     }
 
+    override fun ensureRemoteDir() {
+        val client = connect(ensureRemoteDir = false)
+        try {
+            ensureDir(client, remoteDir)
+        } finally {
+            runCatching { client.disconnect() }
+        }
+    }
+
     override fun listBackupNames(): List<String> {
         val client = connect()
         try {

@@ -86,6 +86,16 @@ class SftpSync(
         channel.cd("/")
     }
 
+    override fun ensureRemoteDir() {
+        val channel = connect(ensureRemoteDir = false)
+        try {
+            ensureDir(channel, remoteDir)
+        } finally {
+            channel.disconnect()
+            session?.disconnect()
+        }
+    }
+
     override fun listBackupNames(): List<String> {
         val channel = connect()
         try {
