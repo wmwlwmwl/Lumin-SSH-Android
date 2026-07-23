@@ -8,18 +8,28 @@
 
 ## [Unreleased]
 
+### 计划
+
+- （空）
+
+---
+
+## [0.1.2] - 2026-07-23
+
 ### 新增
 
 - 终端断开后按回车（或发送栏发送）自动重连，行为对齐桌面端
+- 启动发现新版本时弹窗提示，结果缓存后关于页可直接下载
 
 ### 修复
 
 - 重连成功后偶发 ConcurrentModificationException 导致会话被关掉、欢迎语打印两次
 - 重连连按防抖，避免多次 retry 撞车
+- 远程同步目录缺失时提示忽略 / 重试 / 重新创建并上传本地数据；空远程不再误删本地服务器
 
-### 计划
+### 变更
 
-- （空）
+- 同步导入与云端备份仅支持明文 JSON 与 LUMIN2；移除旧版 `.enc` 兼容，格式错误不再误弹密码框
 
 ---
 
@@ -70,6 +80,7 @@
 
 ---
 
-[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.1...HEAD
+[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.2...HEAD
+[0.1.2]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.2
 [0.1.1]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.1
 [0.1.0]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.0
