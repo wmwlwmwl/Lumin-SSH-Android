@@ -4,6 +4,8 @@ import java.util.UUID
 
 object BackgroundSshSessions {
     private const val MAX_TRANSCRIPT_CHUNKS = 2000
+    /** 同时后台会话上限；满了拒绝新增，不踢旧会话 */
+    const val MAX_SESSIONS = 5
 
     data class Entry(
         val sessionId: String,
@@ -16,7 +18,17 @@ object BackgroundSshSessions {
     var requestedSessionId: String? = null
 
     @Synchronized
-    fun put(conn: Connection, shell: SshShellSession, transcript: List<ByteArray>): String {
+    fun count(): Int = sessions.size
+
+    @Synchronized
+    fun canAdd(): Boolean = sessions.size < MAX_SESSIONS
+
+    /**
+     * @return sessionId，已满时返回 null（不修改 map、不关 shell）
+     */
+    @Synchronized
+    fun put(conn: Connection, shell: SshShellSession, transcript: List<ByteArray>): String? {
+        if (sessions.size >= MAX_SESSIONS) return null
         val sessionId = UUID.randomUUID().toString()
         sessions[sessionId] = Entry(sessionId, conn, shell, ArrayList(transcript.takeLast(MAX_TRANSCRIPT_CHUNKS)))
         return sessionId

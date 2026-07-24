@@ -56,6 +56,9 @@ internal fun decodeWebDavFileName(raw: String): String {
     return sb.toString().trim()
 }
 
+/** 进程内共享，避免每次同步新建线程池/连接池 */
+internal val SharedOkHttpClient = OkHttpClient()
+
 class WebDavSync(
     url: String,
     private val username: String,
@@ -63,7 +66,7 @@ class WebDavSync(
     private val remotePath: String,
 ) : SyncProvider {
     private val url = normalizeWebDavUrl(url)
-    private val client = OkHttpClient()
+    private val client = SharedOkHttpClient
     private val auth = Credentials.basic(username, password)
     private val normalizedRemotePath = remotePath.ifBlank { "/Lumin/" }.let { if (it.endsWith("/")) it else "$it/" }
 

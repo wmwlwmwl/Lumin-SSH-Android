@@ -26,6 +26,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -121,6 +122,15 @@ fun SyncSettingsPage(
                 }
             },
         )
+    }
+    // 离开页面时 complete 等待中的信任确认，避免 FTP/SFTP 的 runBlocking 挂死
+    DisposableEffect(Unit) {
+        onDispose {
+            pendingHostKey?.second?.let { if (!it.isCompleted) it.complete(HostKeyAction.Cancel) }
+            pendingCertificate?.second?.let { if (!it.isCompleted) it.complete(HostKeyAction.Cancel) }
+            pendingHostKey = null
+            pendingCertificate = null
+        }
     }
 
     fun loadRestoreBackups(providerId: String) {

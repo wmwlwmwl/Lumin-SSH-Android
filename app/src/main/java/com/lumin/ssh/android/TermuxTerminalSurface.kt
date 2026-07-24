@@ -55,6 +55,8 @@ class TermuxTerminalSurface(context: Context) : View(context) {
     private var selectionEnd: Pair<Int, Int>? = null
     /** 选择文本对话框打开时：冻结自动滚到底，且对话框只用打开瞬间的快照 */
     private var selectTextDialogOpen = false
+    /** 原生 AlertDialog 会钉住 View/Context；页面销毁前必须 dismiss */
+    private var activeDialog: AlertDialog? = null
     private val pending = ArrayList<ByteArray>()
     private val tapSlopPx = 24f * resources.displayMetrics.density
     // Defaults match LuminDarkPalette terminal tokens until setSurfaceColors() runs.
@@ -86,6 +88,20 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         defaultCursorColor = cursor
         applyDefaultColors()
         invalidate()
+    }
+
+    private fun trackDialog(dialog: AlertDialog): AlertDialog {
+        activeDialog?.takeIf { it !== dialog && it.isShowing }?.dismiss()
+        activeDialog = dialog
+        return dialog
+    }
+
+    /** Compose 页面 dispose / 会话切换时调用，避免原生对话框泄漏 Activity */
+    fun dismissUiDialogs() {
+        val dialog = activeDialog
+        activeDialog = null
+        selectTextDialogOpen = false
+        runCatching { dialog?.dismiss() }
     }
 
     private fun applyDefaultColors() {
@@ -293,23 +309,27 @@ class TermuxTerminalSurface(context: Context) : View(context) {
             R.string.keep_screen_on,
             R.string.clear,
         )
-        AlertDialog.Builder(context)
-            .setTitle(context.getString(R.string.terminal))
-            .setItems(items.map(context::getString).toTypedArray()) { _, which ->
-                when (which) {
-                    0 -> startCopyFromScreen()
-                    1 -> showCopyWholeSessionDialog(clipboard)
-                    2 -> {
-                        val text = clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
-                        if (text.isNotEmpty()) onInput(text)
+        trackDialog(
+            AlertDialog.Builder(context)
+                .setTitle(context.getString(R.string.terminal))
+                .setItems(items.map(context::getString).toTypedArray()) { _, which ->
+                    when (which) {
+                        0 -> startCopyFromScreen()
+                        1 -> showCopyWholeSessionDialog(clipboard)
+                        2 -> {
+                            val text = clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                            if (text.isNotEmpty()) onInput(text)
+                        }
+                        3 -> saveTranscriptToFile()
+                        4 -> shareTranscript()
+                        5 -> keepScreenOn = !keepScreenOn
+                        6 -> clearTerminalScreen()
                     }
-                    3 -> saveTranscriptToFile()
-                    4 -> shareTranscript()
-                    5 -> keepScreenOn = !keepScreenOn
-                    6 -> clearTerminalScreen()
                 }
-            }
-            .show()
+                .show()
+        ).setOnDismissListener {
+            if (activeDialog === it) activeDialog = null
+        }
         return true
     }
 
@@ -412,16 +432,6 @@ class TermuxTerminalSurface(context: Context) : View(context) {
             }
             .create()
 
-        dialog.setOnDismissListener { selectTextDialogOpen = false }
-
-        dialog.show()
-        dialog.window?.setLayout(dialogW, android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
-        // 去掉 Material 默认 customView 左右大间距，否则有效内容区又窄一截
-        (container.parent as? android.view.View)?.setPadding(0, 0, 0, 0)
-        dialog.findViewById<android.view.View>(android.R.id.custom)?.setPadding(0, 0, 0, 0)
-        (dialog.findViewById<android.view.View>(android.R.id.custom)?.parent as? android.view.View)
-            ?.setPadding(0, 0, 0, 0)
-
         fun scrollToEnd() {
             val child = scroll.getChildAt(0) ?: return
             val y = (child.height - scroll.height + scroll.paddingBottom).coerceAtLeast(0)
@@ -446,9 +456,27 @@ class TermuxTerminalSurface(context: Context) : View(context) {
             }
         }
 
+        val fitAgain = Runnable { fitHeightOnce(thenScrollEnd = true) }
+        val scrollEnd = Runnable { scrollToEnd() }
+        dialog.setOnDismissListener {
+            selectTextDialogOpen = false
+            if (activeDialog === dialog) activeDialog = null
+            scroll.removeCallbacks(fitAgain)
+            scroll.removeCallbacks(scrollEnd)
+        }
+
+        trackDialog(dialog)
+        dialog.show()
+        dialog.window?.setLayout(dialogW, android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
+        // 去掉 Material 默认 customView 左右大间距，否则有效内容区又窄一截
+        (container.parent as? android.view.View)?.setPadding(0, 0, 0, 0)
+        dialog.findViewById<android.view.View>(android.R.id.custom)?.setPadding(0, 0, 0, 0)
+        (dialog.findViewById<android.view.View>(android.R.id.custom)?.parent as? android.view.View)
+            ?.setPadding(0, 0, 0, 0)
+
         scroll.post { fitHeightOnce(thenScrollEnd = true) }
-        scroll.postDelayed({ fitHeightOnce(thenScrollEnd = true) }, 48)
-        scroll.postDelayed({ scrollToEnd() }, 100)
+        scroll.postDelayed(fitAgain, 48)
+        scroll.postDelayed(scrollEnd, 100)
     }
 
     private fun shareTranscript() {
@@ -595,20 +623,24 @@ class TermuxTerminalSurface(context: Context) : View(context) {
             context.getString(R.string.copy),
             context.getString(R.string.open_link),
         )
-        AlertDialog.Builder(context)
-            .setTitle(url)
-            .setItems(items) { _, which ->
-                when (which) {
-                    0 -> {
-                        context.getSystemService(ClipboardManager::class.java)
-                            ?.setPrimaryClip(ClipData.newPlainText("url", url))
-                        Toast.makeText(context, context.getString(R.string.link_copied), Toast.LENGTH_SHORT).show()
+        trackDialog(
+            AlertDialog.Builder(context)
+                .setTitle(url)
+                .setItems(items) { _, which ->
+                    when (which) {
+                        0 -> {
+                            context.getSystemService(ClipboardManager::class.java)
+                                ?.setPrimaryClip(ClipData.newPlainText("url", url))
+                            Toast.makeText(context, context.getString(R.string.link_copied), Toast.LENGTH_SHORT).show()
+                        }
+                        1 -> openUrl(url)
                     }
-                    1 -> openUrl(url)
                 }
-            }
-            .setNegativeButton(context.getString(R.string.cancel), null)
-            .show()
+                .setNegativeButton(context.getString(R.string.cancel), null)
+                .show()
+        ).setOnDismissListener {
+            if (activeDialog === it) activeDialog = null
+        }
     }
 
     private fun openUrl(url: String) {

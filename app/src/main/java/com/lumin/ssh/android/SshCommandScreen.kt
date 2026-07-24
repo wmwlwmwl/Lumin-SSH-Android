@@ -47,6 +47,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import java.util.ConcurrentModificationException
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -71,6 +72,8 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             var terminal: TermuxTerminalSurface? = null
         }
     }
+    // 组合是否仍在：NonCancellable 连接结束后用它判断是否还能挂 UI
+    val pageAlive = remember { AtomicBoolean(true) }
     stateRef.shell = shell
     stateRef.terminal = terminal
     val cachedFontSize = remember { mutableStateOf(store.loadTerminalFontSize()) }
@@ -110,6 +113,32 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
     var closingPage by remember { mutableStateOf(false) }
     var lastReconnectAtMs by remember(conn.id) { mutableStateOf(0L) }
     val context = LocalContext.current
+    // applicationContext：后台会话/断开文案不钉住 Activity
+    val appContext = remember(context) { context.applicationContext }
+    val activeDialogs = remember { mutableListOf<AlertDialog>() }
+    fun trackDialog(dialog: AlertDialog): AlertDialog {
+        activeDialogs.add(dialog)
+        dialog.setOnDismissListener { activeDialogs.remove(dialog) }
+        return dialog
+    }
+    fun dismissTrackedDialogs() {
+        activeDialogs.toList().forEach { runCatching { it.dismiss() } }
+        activeDialogs.clear()
+    }
+    /** @return sessionId；已满返回 null（shell 未改回调，调用方决定留在页或断开） */
+    fun parkShellInBackground(currentShell: SshShellSession): String? {
+        if (!BackgroundSshSessions.canAdd()) return null
+        val sessionId = BackgroundSshSessions.put(
+            conn,
+            currentShell,
+            synchronized(outputHistory) { ArrayList(outputHistory) },
+        ) ?: return null
+        // 只捕获 applicationContext，避免 ::localFun 把整个 Composable 作用域钉进后台会话
+        val appCtx = appContext
+        currentShell.detachUi { id, args -> appCtx.getString(id, *args) }
+        currentShell.setOnOutput { bytes, _ -> BackgroundSshSessions.append(sessionId, bytes) }
+        return sessionId
+    }
 
     var showShortcutBar by remember { mutableStateOf(true) }
     var keyboardOpenedByTerminal by remember { mutableStateOf(false) }
@@ -155,15 +184,20 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
     val detachToBackground = {
         val currentShell = shell
         if (currentShell != null && !connecting) {
-            detachedToBackground = true
-            val backgroundSessionId = BackgroundSshSessions.put(
-                conn,
-                currentShell,
-                synchronized(outputHistory) { ArrayList(outputHistory) },
-            )
-            currentShell.setOnOutput { bytes, _ -> BackgroundSshSessions.append(backgroundSessionId, bytes) }
-            SshBackgroundService.start(context, backgroundSessionId)
-            onBack()
+            val backgroundSessionId = parkShellInBackground(currentShell)
+            if (backgroundSessionId == null) {
+                // 已满：不离开页面，让用户先断旧会话
+                Toast.makeText(
+                    context,
+                    context.getString(R.string.background_session_limit_reached, BackgroundSshSessions.MAX_SESSIONS),
+                    Toast.LENGTH_LONG,
+                ).show()
+            } else {
+                detachedToBackground = true
+                dismissTrackedDialogs()
+                SshBackgroundService.start(context, backgroundSessionId)
+                onBack()
+            }
         }
     }
     val closeConnectionPage = {
@@ -178,18 +212,20 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
         if (connecting || shell == null) {
             closeConnectionPage()
         } else {
-            AlertDialog.Builder(context)
-            .setTitle("Lumin SSH")
-            .setMessage(context.getString(R.string.background_session_prompt))
-            .setNegativeButton(context.getString(R.string.cancel), null)
-            .setNeutralButton(context.getString(R.string.exit)) { _, _ ->
-                restoredBackgroundSessionId?.let { SshBackgroundService.release(context, it) }
-                if (!detachedToBackground) shell?.close()
-                shell = null
-                onBack()
-            }
-            .setPositiveButton(context.getString(R.string.yes)) { _, _ -> detachToBackground() }
-            .show()
+            trackDialog(
+                AlertDialog.Builder(context)
+                    .setTitle("Lumin SSH")
+                    .setMessage(context.getString(R.string.background_session_prompt))
+                    .setNegativeButton(context.getString(R.string.cancel), null)
+                    .setNeutralButton(context.getString(R.string.exit)) { _, _ ->
+                        restoredBackgroundSessionId?.let { SshBackgroundService.release(context, it) }
+                        if (!detachedToBackground) shell?.close()
+                        shell = null
+                        onBack()
+                    }
+                    .setPositiveButton(context.getString(R.string.yes)) { _, _ -> detachToBackground() }
+                    .show()
+            )
         }
     }
     BackHandler(enabled = true) { confirmExit() }
@@ -231,13 +267,15 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 onBack()
             }
         }
-        val dialog = AlertDialog.Builder(context)
-            .setTitle(context.getString(R.string.authentication_failed))
-            .setMessage(context.getString(R.string.enter_user_password, conn.username))
-            .setView(dialogView)
-            .setNegativeButton(context.getString(R.string.cancel)) { _, _ -> cancelAuth() }
-            .setPositiveButton(context.getString(R.string.confirm), null)
-            .show()
+        val dialog = trackDialog(
+            AlertDialog.Builder(context)
+                .setTitle(context.getString(R.string.authentication_failed))
+                .setMessage(context.getString(R.string.enter_user_password, conn.username))
+                .setView(dialogView)
+                .setNegativeButton(context.getString(R.string.cancel)) { _, _ -> cancelAuth() }
+                .setPositiveButton(context.getString(R.string.confirm), null)
+                .show()
+        )
         dialog.apply {
             setCanceledOnTouchOutside(false)
             setOnCancelListener { cancelAuth() }
@@ -280,17 +318,26 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             if (!result.isCompleted) result.complete(HostKeyAction.Cancel)
             onBack()
         }
-        AlertDialog.Builder(context)
-            .setTitle(context.getString(R.string.host_key_confirmation))
-            .setMessage(message)
-            .setNegativeButton(context.getString(R.string.cancel)) { _, _ -> cancelNow() }
-            .setNeutralButton(context.getString(R.string.accept_once)) { _, _ -> result.complete(HostKeyAction.AcceptOnce) }
-            .setPositiveButton(context.getString(R.string.accept_and_save)) { _, _ -> result.complete(HostKeyAction.AcceptAndSave) }
-            .show()
-            .apply {
-                setCanceledOnTouchOutside(false)
-                setOnCancelListener { cancelNow() }
+        // 页面 dispose 只 dismiss 时也要 complete，避免握手 runBlocking 挂死
+        fun completeIfPending(action: HostKeyAction) {
+            if (!result.isCompleted) result.complete(action)
+        }
+        trackDialog(
+            AlertDialog.Builder(context)
+                .setTitle(context.getString(R.string.host_key_confirmation))
+                .setMessage(message)
+                .setNegativeButton(context.getString(R.string.cancel)) { _, _ -> cancelNow() }
+                .setNeutralButton(context.getString(R.string.accept_once)) { _, _ -> completeIfPending(HostKeyAction.AcceptOnce) }
+                .setPositiveButton(context.getString(R.string.accept_and_save)) { _, _ -> completeIfPending(HostKeyAction.AcceptAndSave) }
+                .show()
+        ).apply {
+            setCanceledOnTouchOutside(false)
+            setOnCancelListener { cancelNow() }
+            setOnDismissListener {
+                activeDialogs.remove(this)
+                completeIfPending(HostKeyAction.Cancel)
             }
+        }
         result.await()
     }
 
@@ -306,23 +353,24 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 onBack()
             }
         }
-        AlertDialog.Builder(context)
-            .setTitle(context.getString(R.string.connection_failed))
-            .setMessage(context.getString(R.string.retry_question, errorText.ifBlank { context.getString(R.string.unknown) }))
-            .setNegativeButton(context.getString(R.string.no)) { _, _ -> closePage() }
-            .setPositiveButton(context.getString(R.string.yes)) { _, _ ->
-                handled = true
-                shell = null
-                shellReady = false
-                connecting = false
-                connectDetails.clear()
-                retryNonce++
-            }
-            .show()
-            .apply {
-                setCanceledOnTouchOutside(false)
-                setOnCancelListener { closePage() }
-            }
+        trackDialog(
+            AlertDialog.Builder(context)
+                .setTitle(context.getString(R.string.connection_failed))
+                .setMessage(context.getString(R.string.retry_question, errorText.ifBlank { context.getString(R.string.unknown) }))
+                .setNegativeButton(context.getString(R.string.no)) { _, _ -> closePage() }
+                .setPositiveButton(context.getString(R.string.yes)) { _, _ ->
+                    handled = true
+                    shell = null
+                    shellReady = false
+                    connecting = false
+                    connectDetails.clear()
+                    retryNonce++
+                }
+                .show()
+        ).apply {
+            setCanceledOnTouchOutside(false)
+            setOnCancelListener { closePage() }
+        }
     }
     val showKeyboardFromTerminal = {
         // 连接中/未就绪：点终端是误触，不要弹输入法
@@ -438,27 +486,35 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
     }
 
     DisposableEffect(conn.id) {
+        pageAlive.set(true)
         onDispose {
+            pageAlive.set(false)
+            dismissTrackedDialogs()
             terminal?.apply {
+                dismissUiDialogs()
                 onInput = {}
                 onResize = { _, _ -> }
                 onTap = {}
                 onSaveTranscript = { _, _ -> }
             }
             terminal = null
-            val currentShell = shell
-            if (!detachedToBackground && !closingPage && currentShell != null) {
-                val sessionId = BackgroundSshSessions.put(
-                    conn,
-                    currentShell,
-                    synchronized(outputHistory) { ArrayList(outputHistory) },
-                )
-                currentShell.setOnOutput { bytes, _ -> BackgroundSshSessions.append(sessionId, bytes) }
-                SshBackgroundService.start(context, sessionId)
-                detachedToBackground = true
+            stateRef.terminal = null
+            // 连接中 shell 状态可能还是 null，但 stateRef.shell 已指向 nextShell
+            val currentShell = shell ?: stateRef.shell
+            if (!detachedToBackground && !closingPage && currentShell != null && currentShell.isConnected) {
+                // 已连上才尝试挂后台；满了或握手中途则直接关掉，避免孤儿会话
+                val sessionId = parkShellInBackground(currentShell)
+                if (sessionId != null) {
+                    SshBackgroundService.start(context, sessionId)
+                    detachedToBackground = true
+                } else {
+                    currentShell.close()
+                }
             } else if (!detachedToBackground) {
                 currentShell?.close()
             }
+            // dispose 后不再经 stateRef 碰旧 shell（避免 reader post 到已拆 UI）
+            stateRef.shell = null
         }
     }
 
@@ -517,12 +573,15 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                     }
                 }
             },
-            resolveText = { id, args -> context.getString(id, *args) },
+            // 从一开始就用 applicationContext，避免会话在前台异常路径也钉住 Activity
+            resolveText = { id, args -> appContext.getString(id, *args) },
             onStatus = { detail ->
                 AppLog.i("Term", "status $detail")
-                // SnapshotStateList 只能在主线程改
-                scope.launch(Dispatchers.Main.immediate) {
-                    if (!closingPage) connectDetails.add(detail)
+                // SnapshotStateList 只能在主线程改；页面已 dispose 时绝不再写
+                if (pageAlive.get() && !closingPage) {
+                    scope.launch(Dispatchers.Main.immediate) {
+                        if (pageAlive.get() && !closingPage) connectDetails.add(detail)
+                    }
                 }
             },
             confirmHostKey = { confirmHostKey(it) },
@@ -534,9 +593,10 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
                 nextShell.connect()
             }
-            if (closingPage) {
-                AppLog.w("Term", "connected but page closing")
-                nextShell.close()
+            // 页面已 dispose / 正在关闭：绝不能再把 shell 绑回已拆的 UI
+            if (closingPage || !pageAlive.get() || detachedToBackground) {
+                AppLog.w("Term", "connected but page gone closing=$closingPage alive=${pageAlive.get()} bg=$detachedToBackground")
+                if (!detachedToBackground) nextShell.close()
                 shell = null
                 stateRef.shell = null
                 shellReady = false
@@ -550,9 +610,9 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 )
             }
         } catch (it: Throwable) {
-            // 若取消时会话其实已连上，保留并标记就绪（日志里的 LeftCompositionCancellationException）
+            // 若取消时会话其实已连上，且页面仍在，保留并标记就绪（日志里的 LeftCompositionCancellationException）
             // 连上后仅日志/状态列表并发异常时也保留，避免 MOTD 已写完又被关掉导致双份欢迎语
-            if (nextShell.isConnected && !closingPage && (
+            if (nextShell.isConnected && !closingPage && pageAlive.get() && !detachedToBackground && (
                     it is CancellationException || it is ConcurrentModificationException
                     )
             ) {
@@ -562,15 +622,15 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 shellReady = true
             } else {
                 AppLog.e("Term", "connect failed", it)
-                nextShell.close()
+                if (!detachedToBackground) nextShell.close()
                 shell = null
                 stateRef.shell = null
                 shellReady = false
-                if (!closingPage && it is HostKeyRejectedException) {
+                if (pageAlive.get() && !closingPage && it is HostKeyRejectedException) {
                     connecting = false
                     closeConnectionPage()
                     return@LaunchedEffect
-                } else if (!closingPage && it !is CancellationException) {
+                } else if (pageAlive.get() && !closingPage && it !is CancellationException) {
                     val rawErrorText = it.message.orEmpty()
                     val errorText = context.userErrorText(it)
                     val isAuthFailure = sshConn.authMethod == "password" && (

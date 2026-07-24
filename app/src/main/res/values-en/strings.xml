@@ -333,6 +333,7 @@ Local data is unaffected.</string>
     <string name="transcript_saved">Transcript saved</string>
     <string name="transcript_save_failed">Save failed: %1$s</string>
     <string name="background_session_prompt">Keep the session running in the background?\n\nWarning: a background session prevents the device from sleeping and increases battery usage.</string>
+    <string name="background_session_limit_reached">Background session limit reached (%1$d). Disconnect an old session first.</string>
     <string name="exit">Exit</string>
     <string name="yes">Yes</string>
     <string name="no">No</string>

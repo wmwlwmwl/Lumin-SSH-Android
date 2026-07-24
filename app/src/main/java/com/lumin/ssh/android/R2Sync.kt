@@ -1,7 +1,6 @@
 package com.lumin.ssh.android
 
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.w3c.dom.Element
@@ -22,7 +21,7 @@ class R2Sync(
     region: String,
     prefix: String,
 ) : SyncProvider {
-    private val client = OkHttpClient()
+    private val client = SharedOkHttpClient
     private val endpoint = endpoint.trim().trimEnd('/').removePrefix("https://").removePrefix("http://")
     private val prefix = prefix.ifBlank { "Lumin/" }.let { if (it.endsWith('/')) it else "$it/" }
     private val region = region.ifBlank { "auto" }

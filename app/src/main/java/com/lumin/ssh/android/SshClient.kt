@@ -19,6 +19,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 class HostKeyRejectedException : CancellationException("主机密钥未接受")
 
@@ -53,14 +54,25 @@ internal class LocalHostKeyRepository(
     private val host: String,
     private val port: Int,
     private val rejected: AtomicBoolean,
-    private val confirm: suspend (HostKeyConfirm) -> HostKeyAction,
+    /** 用引用持有，便于会话挂后台后 detachUi 丢掉 Activity 回调 */
+    private val confirmRef: AtomicReference<suspend (HostKeyConfirm) -> HostKeyAction>,
 ) : HostKeyRepository {
+    constructor(
+        store: LocalStore,
+        host: String,
+        port: Int,
+        rejected: AtomicBoolean,
+        confirm: suspend (HostKeyConfirm) -> HostKeyAction,
+    ) : this(store, host, port, rejected, AtomicReference(confirm))
+
     override fun check(host: String?, key: ByteArray?): Int {
         if (key == null) return HostKeyRepository.NOT_INCLUDED
         val fingerprint = sshSha256Fingerprint(key)
         val saved = store.loadKnownHostFingerprint(this.host, port)
         if (saved == fingerprint) return HostKeyRepository.OK
-        val action = runBlocking { confirm(HostKeyConfirm(this@LocalHostKeyRepository.host, port, fingerprint, saved.isNotBlank())) }
+        val action = runBlocking {
+            confirmRef.get().invoke(HostKeyConfirm(this@LocalHostKeyRepository.host, port, fingerprint, saved.isNotBlank()))
+        }
         return when (action) {
             HostKeyAction.Cancel -> {
                 rejected.set(true)
@@ -91,14 +103,15 @@ class SshShellSession(
     private val store: LocalStore,
     private val conn: Connection,
     private var onOutput: (ByteArray, Int) -> Unit,
-    private val resolveText: (Int, Array<out Any>) -> String,
-    private val onStatus: (String) -> Unit = {},
-    private val confirmHostKey: suspend (HostKeyConfirm) -> HostKeyAction = { HostKeyAction.Cancel },
+    private var resolveText: (Int, Array<out Any>) -> String,
+    private var onStatus: (String) -> Unit = {},
+    confirmHostKey: suspend (HostKeyConfirm) -> HostKeyAction = { HostKeyAction.Cancel },
 ) : AutoCloseable {
     private var session: Session? = null
     private var channel: ChannelShell? = null
     private var output: OutputStream? = null
     private val closed = AtomicBoolean(false)
+    private val confirmHostKeyRef = AtomicReference(confirmHostKey)
 
     private fun text(id: Int, vararg args: Any): String = resolveText(id, args)
 
@@ -119,7 +132,7 @@ class SshShellSession(
         onStatus(text(R.string.ssh_creating_session))
         val hostKeyRejected = AtomicBoolean(false)
         val jsch = JSch().apply {
-            hostKeyRepository = LocalHostKeyRepository(store, conn.host, conn.port, hostKeyRejected, confirmHostKey)
+            hostKeyRepository = LocalHostKeyRepository(store, conn.host, conn.port, hostKeyRejected, confirmHostKeyRef)
         }
         if (conn.authMethod == "privateKey") {
             jsch.addIdentity(
@@ -183,6 +196,12 @@ class SshShellSession(
         nextChannel.connect(15000)
         AppLog.i("SSH", "shell ready in ${System.currentTimeMillis() - tShell}ms (total ${elapsed()}ms), start reader")
 
+        // close() 可能在 NonCancellable 连接途中先跑完：不得再挂上新 channel/reader
+        if (closed.get()) {
+            runCatching { nextChannel.disconnect() }
+            runCatching { nextSession.disconnect() }
+            throw CancellationException(text(R.string.ssh_connection_cancelled))
+        }
         session = nextSession
         channel = nextChannel
         output = nextOutput
@@ -192,6 +211,16 @@ class SshShellSession(
 
     fun setOnOutput(callback: (ByteArray, Int) -> Unit) {
         onOutput = callback
+    }
+
+    /**
+     * 挂后台前调用：丢掉 UI/Activity 相关回调。
+     * JSch HostKeyRepository 仍引用 confirmHostKeyRef，故必须把 ref 置空，不能只清字段。
+     */
+    fun detachUi(safeResolveText: (Int, Array<out Any>) -> String) {
+        resolveText = safeResolveText
+        onStatus = {}
+        confirmHostKeyRef.set { HostKeyAction.Cancel }
     }
 
     val isConnected: Boolean get() = !closed.get() && channel?.isConnected == true
@@ -214,6 +243,11 @@ class SshShellSession(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        // 帮助 GC：断开后不再通过回调链钉住 UI/Compose 状态
+        onOutput = { _, _ -> }
+        onStatus = {}
+        resolveText = { _, _ -> "" }
+        confirmHostKeyRef.set { HostKeyAction.Cancel }
         runCatching { channel?.disconnect() }
         runCatching { session?.disconnect() }
     }

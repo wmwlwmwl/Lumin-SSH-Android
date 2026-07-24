@@ -334,6 +334,7 @@
     <string name="transcript_saved">已保存副本</string>
     <string name="transcript_save_failed">保存失败：%1$s</string>
     <string name="background_session_prompt">你想让会话在后台运行吗？\n\n警告：在后台运行的会话将阻止您的设备进入休眠状态，并增加耗电量</string>
+    <string name="background_session_limit_reached">后台会话已达上限（%1$d 个），请先断开旧会话</string>
     <string name="exit">退出</string>
     <string name="yes">是</string>
     <string name="no">否</string>
