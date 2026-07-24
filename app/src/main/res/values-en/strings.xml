@@ -192,6 +192,9 @@ Local data is unaffected.</string>
     <string name="private_key_login">Private key login</string>
     <string name="selected_credential_hint">Use the selected credential username and auth info when connecting</string>
     <string name="proxy_settings">Proxy settings</string>
+    <string name="advanced_options">Advanced options</string>
+    <string name="allow_legacy_ssh_rsa">Allow legacy ssh-rsa host keys</string>
+    <string name="allow_legacy_ssh_rsa_hint">Enable only for servers that offer ssh-rsa exclusively; RSA host keys below 1024 bits are not supported</string>
     <string name="no_proxy_selected">No proxy ✓</string>
     <string name="no_proxy">No proxy</string>
     <string name="select_proxy_node_selected">Select proxy node ✓</string>

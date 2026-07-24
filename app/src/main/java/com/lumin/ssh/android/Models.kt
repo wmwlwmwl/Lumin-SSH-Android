@@ -16,6 +16,7 @@ data class Connection(
     val group: String = "",
     val os: String = "",
     val credentialId: String = "",
+    val allowLegacySshRsa: Boolean = false,
     val proxyMode: String = "",
     val proxyNodeId: String = "",
     val proxyType: String = "socks5",
@@ -123,6 +124,7 @@ fun Connection.toJson() = JSONObject().apply {
     if (n.group.isNotEmpty()) put("group", n.group)
     if (n.os.isNotEmpty()) put("os", n.os)
     if (n.credentialId.isNotEmpty()) put("credentialId", n.credentialId)
+    if (n.allowLegacySshRsa) put("allowLegacySshRsa", true)
     if (n.proxyMode.isNotEmpty()) put("proxyMode", n.proxyMode)
     if (n.proxyNodeId.isNotEmpty()) put("proxyNodeId", n.proxyNodeId)
     if (n.proxyType.isNotEmpty()) put("proxyType", n.proxyType)
@@ -146,6 +148,7 @@ fun JSONObject.toConnection() = Connection(
     group = optString("group"),
     os = optString("os"),
     credentialId = optString("credentialId"),
+    allowLegacySshRsa = optBoolean("allowLegacySshRsa", false),
     proxyMode = optString("proxyMode"),
     proxyNodeId = optString("proxyNodeId"),
     // 缺省不填 socks5：由 normalizedForSync 在 direct 时清掉

@@ -16,6 +16,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -63,6 +64,7 @@ fun ConnectionForm(
     var proxyPort by remember(formKey) { mutableStateOf((initial?.proxyPort ?: 1080).toString()) }
     var proxyUsername by remember(formKey) { mutableStateOf(initial?.proxyUsername ?: "") }
     var proxyPassword by remember(formKey) { mutableStateOf(initial?.proxyPassword ?: "") }
+    var allowLegacySshRsa by remember(formKey) { mutableStateOf(initial?.allowLegacySshRsa ?: false) }
     var proxyMenuOpen by remember { mutableStateOf(false) }
     val selectedCredential = credentials.firstOrNull { it.id == credentialId }
     val selectedProxyNode = proxyNodes.firstOrNull { it.id == proxyNodeId }
@@ -88,6 +90,7 @@ fun ConnectionForm(
                 group = group,
                 os = if (isNew) "" else (initial?.os ?: ""),
                 credentialId = if (useCredential) credentialId else "",
+                allowLegacySshRsa = allowLegacySshRsa,
                 proxyMode = proxyMode,
                 proxyNodeId = if (proxyMode == "node") proxyNodeId else "",
                 proxyType = if (proxyType == "http") "http" else "socks5",
@@ -222,6 +225,32 @@ fun ConnectionForm(
                     OutlinedTextField(proxyPort, { proxyPort = it.filter { c -> c.isDigit() } }, label = { Text(stringResource(R.string.proxy_port)) }, modifier = Modifier.fillMaxWidth(), shape = LuminControlShape, colors = luminTextFieldColors(), singleLine = true)
                     OutlinedTextField(proxyUsername, { proxyUsername = it }, label = { Text(stringResource(R.string.proxy_username_optional)) }, modifier = Modifier.fillMaxWidth(), shape = LuminControlShape, colors = luminTextFieldColors(), singleLine = true)
                     OutlinedTextField(proxyPassword, { proxyPassword = it }, label = { Text(stringResource(R.string.proxy_password_optional)) }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), shape = LuminControlShape, colors = luminTextFieldColors(), singleLine = true)
+                }
+            }
+
+            LuminSectionTitle(stringResource(R.string.advanced_options))
+            LuminSoftPanel {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            stringResource(R.string.allow_legacy_ssh_rsa),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = LuminColors.TextPrimary,
+                        )
+                        Text(
+                            stringResource(R.string.allow_legacy_ssh_rsa_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = LuminColors.TextMuted,
+                        )
+                    }
+                    Switch(
+                        checked = allowLegacySshRsa,
+                        onCheckedChange = { allowLegacySshRsa = it },
+                    )
                 }
             }
         }

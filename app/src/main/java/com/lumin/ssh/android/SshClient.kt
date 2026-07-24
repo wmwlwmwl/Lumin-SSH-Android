@@ -29,6 +29,9 @@ class PeerTrustRejectedException(message: String) : CancellationException(messag
 
 internal val SSH_HOST_KEY_ALGORITHMS = "ssh-ed25519,ecdsa-sha2-nistp256,rsa-sha2-256,rsa-sha2-512"
 
+internal fun hostKeyAlgorithmsForConnection(allowLegacySshRsa: Boolean): String =
+    if (allowLegacySshRsa) "$SSH_HOST_KEY_ALGORITHMS,ssh-rsa" else SSH_HOST_KEY_ALGORITHMS
+
 data class HostKeyConfirm(
     val host: String,
     val port: Int,
@@ -149,7 +152,7 @@ class SshShellSession(
                 setUserInfo(PasswordUserInfo(conn.password))
             }
             setConfig("StrictHostKeyChecking", "yes")
-            setConfig("server_host_key", SSH_HOST_KEY_ALGORITHMS)
+            setConfig("server_host_key", hostKeyAlgorithmsForConnection(conn.allowLegacySshRsa))
             setConfig("PreferredAuthentications", if (conn.authMethod == "privateKey") "publickey" else "keyboard-interactive,password")
             // 握手超时；连上后必须清零，否则 SO_TIMEOUT 会杀读线程
             timeout = 15000

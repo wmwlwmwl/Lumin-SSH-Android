@@ -193,6 +193,9 @@
     <string name="private_key_login">私钥登录</string>
     <string name="selected_credential_hint">连接时使用所选凭据的用户名和认证信息</string>
     <string name="proxy_settings">代理设置</string>
+    <string name="advanced_options">高级选项</string>
+    <string name="allow_legacy_ssh_rsa">兼容旧版 ssh-rsa 主机密钥</string>
+    <string name="allow_legacy_ssh_rsa_hint">仅当服务器只支持 ssh-rsa 时启用；不支持低于 1024 位的 RSA 主机密钥</string>
     <string name="no_proxy_selected">不使用代理 ✓</string>
     <string name="no_proxy">不使用代理</string>
     <string name="select_proxy_node_selected">选择代理节点 ✓</string>
