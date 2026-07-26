@@ -14,6 +14,21 @@
 
 ---
 
+## [0.1.3] - 2026-07-26
+
+### 新增
+
+- 支持旧版 `ssh-rsa` 主机密钥兼容（按服务器开关透传 `allowLegacySshRsa`）
+
+### 修复
+
+- SSH / 对话框内存泄漏：挂后台 detachUi；原生 Dialog 在页面 dispose 时关闭；Host Key / 同步信任确认 complete 防挂死
+- 连接竞态：pageAlive + stateRef，避免孤儿 JSch / reader
+- 共享 OkHttpClient；终端 postDelayed / Dialog 清理
+- 后台会话最多 5 个，超限拒绝并提示
+
+---
+
 ## [0.1.2] - 2026-07-23
 
 ### 新增
@@ -80,7 +95,8 @@
 
 ---
 
-[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.2...HEAD
+[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.3...HEAD
+[0.1.3]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.3
 [0.1.2]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.2
 [0.1.1]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.1
 [0.1.0]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.0
