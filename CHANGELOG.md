@@ -14,6 +14,14 @@
 
 ---
 
+## [0.1.4] - 2026-07-31
+
+### 修复
+
+- AI 全局设置同步时保留最新时间戳，避免较旧设置覆盖较新设置
+
+---
+
 ## [0.1.3] - 2026-07-26
 
 ### 新增
@@ -95,7 +103,8 @@
 
 ---
 
-[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.3...HEAD
+[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.4...HEAD
+[0.1.4]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.4
 [0.1.3]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.3
 [0.1.2]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.2
 [0.1.1]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.1
