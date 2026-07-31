@@ -483,7 +483,6 @@ object SyncHelper {
         if (localRaw.isBlank()) return remoteRaw
         val local = runCatching { JSONObject(localRaw) }.getOrNull() ?: return remoteRaw
         val remote = runCatching { JSONObject(remoteRaw) }.getOrNull() ?: return localRaw
-        if (jsonObjectContentEqualIgnoringUpdatedAt(local, remote)) return localRaw
         return if (remote.optLong("updatedAt", 0L) > local.optLong("updatedAt", 0L)) remote.toString(2) else local.toString(2)
     }
 

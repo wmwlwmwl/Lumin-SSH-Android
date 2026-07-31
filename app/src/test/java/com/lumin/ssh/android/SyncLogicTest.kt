@@ -1,5 +1,6 @@
 package com.lumin.ssh.android
 
+import org.json.JSONObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -441,6 +442,30 @@ class SyncLogicTest {
         assertEquals("merge", merged.action)
         assertEquals(setOf(0, 1, 2), merged.uploadIndexes)
         assertEquals(setOf("local", "remote"), merged.snapshot.connections.map { it.id }.toSet())
+    }
+
+    @Test
+    fun planKeepsNewestAiGlobalSettingsTimestamp() {
+        val local = SyncSnapshot(
+            emptyList(),
+            emptyList(),
+            aiGlobalSettingsRaw = """{"currentProviderId":"p","updatedAt":100}""",
+        )
+        val newerRemote = local.copy(
+            aiGlobalSettingsRaw = """{"currentProviderId":"p","updatedAt":200}""",
+        )
+
+        val download = SyncHelper.planSync(local, listOf(newerRemote), lastSyncTime = 0, syncTime = 300)
+
+        assertEquals(200L, JSONObject(download.snapshot.aiGlobalSettingsRaw).optLong("updatedAt"))
+        assertEquals("download", download.action)
+        assertTrue(download.uploadIndexes.isEmpty())
+
+        val upload = SyncHelper.planSync(newerRemote, listOf(local), lastSyncTime = 0, syncTime = 300)
+
+        assertEquals(200L, JSONObject(upload.snapshot.aiGlobalSettingsRaw).optLong("updatedAt"))
+        assertEquals("upload", upload.action)
+        assertEquals(setOf(0), upload.uploadIndexes)
     }
 
     @Test
