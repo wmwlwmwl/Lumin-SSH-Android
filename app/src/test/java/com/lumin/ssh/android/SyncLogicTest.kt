@@ -616,6 +616,42 @@ class SyncLogicTest {
     }
 
     @Test
+    fun pcOnlyFieldsSurviveJsonRoundTrip() {
+        // PC 独有字段安卓无界面，必须原样透传：否则安卓同步一轮后把 PC 的配置抹成默认值
+        val json = JSONObject(
+            """
+            {"id":"1","name":"s","host":"h","port":22,"username":"u","authMethod":"password",
+             "terminalInitPath":"/opt","fileManagerInitPath":"/srv","terminalEncoding":"gbk",
+             "last_modified":100}
+            """.trimIndent(),
+        )
+        val parsed = json.toConnection()
+        assertEquals("/opt", parsed.terminalInitPath)
+        assertEquals("/srv", parsed.fileManagerInitPath)
+        assertEquals("gbk", parsed.terminalEncoding)
+
+        val reserialized = parsed.toJson()
+        assertEquals("/opt", reserialized.optString("terminalInitPath"))
+        assertEquals("/srv", reserialized.optString("fileManagerInitPath"))
+        assertEquals("gbk", reserialized.optString("terminalEncoding"))
+    }
+
+    @Test
+    fun terminalEncodingNormalizesToUtf8LikePc() {
+        // 缺字段（安卓旧包/PC omitempty）与显式 utf-8 必须同形，否则每轮同步都判不等而白传
+        val missing = JSONObject("""{"id":"1","host":"h","username":"u"}""").toConnection()
+        assertEquals("utf-8", missing.terminalEncoding)
+        assertEquals("utf-8", missing.copy(terminalEncoding = "UTF8").normalizedForSync().terminalEncoding)
+        assertEquals("gbk", missing.copy(terminalEncoding = " GBK ").normalizedForSync().terminalEncoding)
+        assertTrue(
+            SyncHelper.snapshotBusinessEqual(
+                SyncSnapshot(listOf(missing), emptyList()),
+                SyncSnapshot(listOf(missing.copy(terminalEncoding = "utf-8")), emptyList()),
+            ),
+        )
+    }
+
+    @Test
     fun quickCommandsExpandedIgnoredInBusinessEqual() {
         val a = """[{"type":"group","name":"面板安装","expanded":true,"children":[{"name":"宝塔","command":"x","last_modified":1}],"last_modified":1}]"""
         val b = """[{"type":"group","name":"面板安装","expanded":false,"children":[{"name":"宝塔","command":"x","last_modified":1}],"last_modified":1}]"""

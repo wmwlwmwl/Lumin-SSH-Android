@@ -90,6 +90,10 @@ fun ConnectionForm(
                 group = group,
                 os = if (isNew) "" else (initial?.os ?: ""),
                 credentialId = if (useCredential) credentialId else "",
+                // 安卓无对应界面，编辑时原样带回，否则会抹掉 PC 端配置
+                terminalInitPath = initial?.terminalInitPath ?: "",
+                fileManagerInitPath = initial?.fileManagerInitPath ?: "",
+                terminalEncoding = initial?.terminalEncoding ?: "",
                 allowLegacySshRsa = allowLegacySshRsa,
                 proxyMode = proxyMode,
                 proxyNodeId = if (proxyMode == "node") proxyNodeId else "",

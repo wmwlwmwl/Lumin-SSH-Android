@@ -16,6 +16,10 @@ data class Connection(
     val group: String = "",
     val os: String = "",
     val credentialId: String = "",
+    // 安卓不使用这三个字段，仅透传保存，避免同步时把 PC 端配置抹掉
+    val terminalInitPath: String = "",
+    val fileManagerInitPath: String = "",
+    val terminalEncoding: String = "",
     val allowLegacySshRsa: Boolean = false,
     val proxyMode: String = "",
     val proxyNodeId: String = "",
@@ -49,6 +53,18 @@ data class ProxyNode(
     val updatedAt: Long = System.currentTimeMillis(),
 )
 
+// 与 PC normalizeTerminalEncoding 对齐：空→utf-8，其余 trim+小写。
+// 必须和 PC 归一到同一形态，否则两端各持己见，snapshotBusinessEqual 永远判不等，每轮同步都白传一次。
+// ponytail: 只做 trim+lowercase，不校验编码名是否合法（PC 用 ianaindex 查表）。
+// 够用是因为写入同步流的值已被 PC 在读取/保存时归一成小写 IANA 名，安卓只需原样透传回去。
+// 限制：手工改过的配置里若有别名（cp936 vs gbk），两端形态可能不一致而多传一轮，不影响数据正确性。
+// 升级路径：真要严格校验就引入 charset 查表（Charset.forName(...).name()）替掉这里。
+private fun normalizeTerminalEncoding(value: String): String {
+    val normalized = value.trim()
+    if (normalized.isEmpty() || normalized.equals("utf8", true) || normalized.equals("utf-8", true)) return "utf-8"
+    return normalized.lowercase()
+}
+
 // 同步比较/上传规范化，与 PC normalizeConnectionForSync 对齐：
 // trim；proxyMode 空→direct；direct/node 清掉无意义 proxy*；避免写 socks5/1080 空串被当成变更。
 fun Connection.normalizedForSync(): Connection {
@@ -69,6 +85,9 @@ fun Connection.normalizedForSync(): Connection {
         group = group.trim(),
         os = os.trim(),
         credentialId = credentialId.trim(),
+        terminalInitPath = terminalInitPath.trim(),
+        fileManagerInitPath = fileManagerInitPath.trim(),
+        terminalEncoding = normalizeTerminalEncoding(terminalEncoding),
         proxyMode = mode,
         proxyNodeId = proxyNodeId.trim(),
         proxyHost = proxyHost.trim(),
@@ -124,6 +143,9 @@ fun Connection.toJson() = JSONObject().apply {
     if (n.group.isNotEmpty()) put("group", n.group)
     if (n.os.isNotEmpty()) put("os", n.os)
     if (n.credentialId.isNotEmpty()) put("credentialId", n.credentialId)
+    if (n.terminalInitPath.isNotEmpty()) put("terminalInitPath", n.terminalInitPath)
+    if (n.fileManagerInitPath.isNotEmpty()) put("fileManagerInitPath", n.fileManagerInitPath)
+    put("terminalEncoding", n.terminalEncoding)
     if (n.allowLegacySshRsa) put("allowLegacySshRsa", true)
     if (n.proxyMode.isNotEmpty()) put("proxyMode", n.proxyMode)
     if (n.proxyNodeId.isNotEmpty()) put("proxyNodeId", n.proxyNodeId)
@@ -148,6 +170,9 @@ fun JSONObject.toConnection() = Connection(
     group = optString("group"),
     os = optString("os"),
     credentialId = optString("credentialId"),
+    terminalInitPath = optString("terminalInitPath"),
+    fileManagerInitPath = optString("fileManagerInitPath"),
+    terminalEncoding = optString("terminalEncoding"),
     allowLegacySshRsa = optBoolean("allowLegacySshRsa", false),
     proxyMode = optString("proxyMode"),
     proxyNodeId = optString("proxyNodeId"),
