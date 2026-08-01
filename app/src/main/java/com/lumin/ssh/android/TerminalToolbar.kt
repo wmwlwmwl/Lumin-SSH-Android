@@ -36,9 +36,11 @@ fun TerminalToolbar(
     showShortcutBar: Boolean,
     showInputBar: Boolean,
     command: String,
+    ctrlMode: Boolean,
     onCommandChange: (String) -> Unit,
     onSendPrompt: () -> Unit,
     onShortcut: (String) -> Unit,
+    onToggleCtrlMode: () -> Unit,
     onToggleInputBar: () -> Unit,
     onOpenQuickCommands: () -> Unit,
 ) {
@@ -60,8 +62,9 @@ fun TerminalToolbar(
                     TerminalShortcut("END", Modifier.weight(1f)) { onShortcut("[F") }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // 粘滞 CTRL：按下后下一个字母转控制符（nano 的 ^O/^X/^K/^W 等全部可发）
+                    TerminalShortcut("CTRL", Modifier.weight(1f), active = ctrlMode) { onToggleCtrlMode() }
                     TerminalShortcut("CTRL+C", Modifier.weight(1f), fontSize = 10.sp) { onShortcut("") }
-                    TerminalShortcut("CTRL+D", Modifier.weight(1f), fontSize = 10.sp) { onShortcut("") }
                     TerminalShortcut("←", Modifier.weight(1f)) { onShortcut("[D") }
                     TerminalShortcut("↓", Modifier.weight(1f)) { onShortcut("[B") }
                     TerminalShortcut("→", Modifier.weight(1f)) { onShortcut("[C") }
@@ -124,29 +127,40 @@ fun TerminalToolbar(
 }
 
 @Composable
-fun TerminalShortcut(label: String, modifier: Modifier = Modifier, fontSize: TextUnit? = null, onClick: () -> Unit) {
+fun TerminalShortcut(
+    label: String,
+    modifier: Modifier = Modifier,
+    fontSize: TextUnit? = null,
+    active: Boolean = false,
+    onClick: () -> Unit,
+) {
     val resolvedFontSize = fontSize ?: when {
         label.length >= 6 -> 10.sp
         label.length >= 4 -> 11.sp
         else -> 13.sp
     }
-    Text(
-        label,
-        color = LuminColors.TerminalText,
-        textAlign = TextAlign.Center,
-        maxLines = 1,
-        softWrap = false,
-        overflow = TextOverflow.Clip,
+    // 字号不同的键（10sp 的 HOME / CTRL+C）不能只靠内边距摆位，否则字越小坐得越高
+    Box(
         modifier = modifier
             .heightIn(min = 40.dp)
             .clip(RoundedCornerShape(10.dp))
-            .background(LuminColors.TerminalKey)
-            .border(1.dp, LuminColors.TerminalBorder, RoundedCornerShape(10.dp))
+            .background(if (active) LuminColors.Accent else LuminColors.TerminalKey)
+            .border(1.dp, if (active) LuminColors.Accent else LuminColors.TerminalBorder, RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 4.dp, vertical = 10.dp),
-        fontFamily = FontFamily.Monospace,
-        style = MaterialTheme.typography.bodyMedium.copy(fontSize = resolvedFontSize),
-    )
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = if (active) LuminColors.OnAccent else LuminColors.TerminalText,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Clip,
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = resolvedFontSize),
+        )
+    }
 }
 
 internal fun sanitizeSoftKeyboardInput(text: String): String {
@@ -159,4 +173,24 @@ internal fun sanitizeSoftKeyboardInput(text: String): String {
             }
         }
     }
+}
+
+/**
+ * 粘滞 CTRL：把一个可打印字符转成控制符（^A..^Z 与 ^[ ^\ ^] ^^ ^_ ^? ^@）。
+ * 只吃单字符输入；多字符（IME 联想、粘贴）或无对应控制符时返回 null，由调用方原样发送。
+ */
+internal fun ctrlKeyPayload(text: String): String? {
+    if (text.length != 1) return null
+    val code = when (val ch = text[0].uppercaseChar()) {
+        in 'A'..'Z' -> ch - 'A' + 1
+        '@', ' ' -> 0
+        '[' -> 27
+        '\\' -> 28
+        ']' -> 29
+        '^' -> 30
+        '_' -> 31
+        '?' -> 127
+        else -> return null
+    }
+    return code.toChar().toString()
 }

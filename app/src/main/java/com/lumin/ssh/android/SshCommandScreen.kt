@@ -141,6 +141,8 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
     }
 
     var showShortcutBar by remember { mutableStateOf(true) }
+    // 粘滞 CTRL：亮起时下一个字符转控制符，发完自动灭（对齐 Termux）
+    var ctrlMode by remember { mutableStateOf(false) }
     var keyboardOpenedByTerminal by remember { mutableStateOf(false) }
     var pendingColumns by remember { mutableStateOf(0) }
     var pendingRows by remember { mutableStateOf(0) }
@@ -443,7 +445,15 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 }
         }
     }
-    val safeSend: (String) -> Unit = { text -> sendToShell(text) }
+    /** 粘滞 CTRL 亮时把字符转成控制符并复位；转不了的（回车/退格/方向键序列）原样发。 */
+    val safeSend: (String) -> Unit = { text ->
+        if (ctrlMode) {
+            ctrlMode = false
+            sendToShell(ctrlKeyPayload(text) ?: text)
+        } else {
+            sendToShell(text)
+        }
+    }
     val sendPromptCommand = {
         if (!isShellLive()) {
             if (!connecting) requestReconnect()
@@ -727,7 +737,16 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 value = keyboardText,
                 onValueChange = { newValue ->
                     val oldText = keyboardText.text
-                    if (newValue.composition != null) {
+                    // 粘滞 CTRL 亮时不等 IME 组词：拿到单字符立刻转控制符发出（nano ^O/^X 等）
+                    val ctrlChar = if (ctrlMode && newValue.text.length == oldText.length + 1 && newValue.text.startsWith(oldText)) {
+                        newValue.text.substring(oldText.length)
+                    } else {
+                        null
+                    }
+                    if (ctrlChar != null) {
+                        safeSend(ctrlChar)
+                        keyboardText = TextFieldValue("")
+                    } else if (newValue.composition != null) {
                         keyboardText = newValue
                     } else {
                         val textToSend = when {
@@ -788,9 +807,12 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 showShortcutBar = showShortcutBar,
                 showInputBar = showInputBar,
                 command = command,
+                ctrlMode = ctrlMode,
                 onCommandChange = { command = it },
                 onSendPrompt = { sendPromptCommand() },
-                onShortcut = { key -> safeSend(key) },
+                // 快捷键自带控制符/转义序列，不经粘滞 CTRL（避免 CTRL 被白吃）
+                onShortcut = { key -> sendToShell(key) },
+                onToggleCtrlMode = { ctrlMode = !ctrlMode },
                 onToggleInputBar = { val next = !showInputBar; showInputBar = next; store.saveShowInputBar(next) },
                 onOpenQuickCommands = { openQuickCommands() },
             )
