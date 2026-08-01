@@ -14,6 +14,18 @@
 
 ---
 
+## [0.1.5] - 2026-08-01
+
+### 新增
+
+- 终端快捷键栏新增粘滞 `CTRL` 键，可通过软键盘发送 `Ctrl` 组合键
+
+### 修复
+
+- 终端尺寸变化时通知远端 `WINCH`，避免 `nano` 等全屏程序在输入法弹收、改字号或旋屏后显示内容丢失
+
+---
+
 ## [0.1.4] - 2026-07-31
 
 ### 修复
@@ -103,7 +115,8 @@
 
 ---
 
-[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.4...HEAD
+[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.5...HEAD
+[0.1.5]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.5
 [0.1.4]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.4
 [0.1.3]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.3
 [0.1.2]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.2
