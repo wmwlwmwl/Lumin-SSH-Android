@@ -388,17 +388,19 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
             keyboard?.show()
         }
     }
-    /** 只记本地尺寸；不远程 WINCH（见 SshShellSession.resize）。 */
+    /** 本地尺寸变化 → 通知远端 WINCH（内部防抖，见 SshShellSession.resize）。 */
     fun resizePtyOnce(columns: Int, rows: Int) {
         if (columns < 20 || rows < 5) return
-        val safeCols = columns.coerceIn(20, 120)
-        val safeRows = rows.coerceIn(5, 48)
+        // 上限只兜异常值：截断会让远端以为屏幕更矮，全屏程序底栏画在半屏处
+        val safeCols = columns.coerceIn(20, 500)
+        val safeRows = rows.coerceIn(5, 500)
         pendingColumns = safeCols
         pendingRows = safeRows
+        (stateRef.shell ?: shell)?.resize(safeCols, safeRows)
         if (safeCols != lastLoggedLocalCols || safeRows != lastLoggedLocalRows) {
             lastLoggedLocalCols = safeCols
             lastLoggedLocalRows = safeRows
-            AppLog.d("Term", "local size ${safeCols}x$safeRows (no remote WINCH)")
+            AppLog.d("Term", "local size ${safeCols}x$safeRows")
         }
     }
     // 与 PC 一致：断开/失败后按回车触发重连
@@ -683,6 +685,13 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
         AppLog.i("Term", "flush history chunks=$chunkCount")
         forEachOutputChunk { view.append(it) }
         view.setTag(R.id.lumin_term_live_output, true)
+    }
+
+    // 连上后同步一次真实尺寸：pty 建连时开的是保守的 80x24，不纠正的话全屏程序按 24 行排版
+    LaunchedEffect(shellReady) {
+        if (!shellReady) return@LaunchedEffect
+        if (pendingColumns <= 0 || pendingRows <= 0) return@LaunchedEffect
+        (stateRef.shell ?: shell)?.resize(pendingColumns, pendingRows)
     }
 
     Column(Modifier.fillMaxSize().background(LuminColors.TerminalBg)) {

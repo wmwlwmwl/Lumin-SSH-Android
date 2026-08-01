@@ -58,6 +58,22 @@ class TermuxTerminalSurface(context: Context) : View(context) {
     /** 原生 AlertDialog 会钉住 View/Context；页面销毁前必须 dismiss */
     private var activeDialog: AlertDialog? = null
     private val pending = ArrayList<ByteArray>()
+    /** 待应用的行列：键盘动画期间只记不重排，见 onSizeChanged */
+    private var pendingResize: Pair<Int, Int>? = null
+    private val applyResize = Runnable {
+        val target = pendingResize
+        pendingResize = null
+        val current = emulator
+        if (target != null && current != null) {
+            val (columns, rows) = target
+            if (current.mColumns != columns || current.mRows != rows) {
+                current.resize(columns, rows, renderer.fontWidth.toInt(), renderer.fontLineSpacing)
+                // 本地重排与远程 WINCH 同时发生，把花屏窗口压到一次网络往返
+                onResize(columns, rows)
+                invalidate()
+            }
+        }
+    }
     private val tapSlopPx = 24f * resources.displayMetrics.density
     // Defaults match LuminDarkPalette terminal tokens until setSurfaceColors() runs.
     private var surfaceBackgroundColor: Int = Color.rgb(10, 14, 20)
@@ -121,6 +137,10 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         if (current == null) {
             requestLayout()
         } else {
+            // 改字号是单次操作（非动画），立即生效更跟手；
+            // 但要丢掉待处理的防抖，否则旧行列会把这次覆盖回去
+            removeCallbacks(applyResize)
+            pendingResize = null
             val columns = max(20, (width / renderer.fontWidth).toInt())
             val rows = max(5, height / renderer.fontLineSpacing)
             current.resize(columns, rows, renderer.fontWidth.toInt(), renderer.fontLineSpacing)
@@ -153,10 +173,27 @@ class TermuxTerminalSurface(context: Context) : View(context) {
             applyDefaultColors()
             pending.forEach { emulator?.append(it, it.size) }
             pending.clear()
-        } else {
-            current.resize(columns, rows, renderer.fontWidth.toInt(), renderer.fontLineSpacing)
+            onResize(columns, rows)
+            return
         }
-        onResize(columns, rows)
+        if (current.mColumns == columns && current.mRows == rows) {
+            // 已经是目标尺寸：连带撤掉在途的旧任务，否则它会把缓冲区改回错的行列
+            removeCallbacks(applyResize)
+            pendingResize = null
+            return
+        }
+        // 键盘动画每帧都会走到这里（实测一轮 14 次）。逐帧 resize 会把备用屏幕（nano 等）
+        // 的内容反复重排揉花，故动画期间不动缓冲区，等尺寸稳定后只重排一次并通知远端。
+        pendingResize = columns to rows
+        removeCallbacks(applyResize)
+        // 帧间隔实测 15–66ms，100ms 足够合成一轮动画
+        postDelayed(applyResize, 100)
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(applyResize)
+        pendingResize = null
+        super.onDetachedFromWindow()
     }
 
     override fun onDraw(canvas: Canvas) {

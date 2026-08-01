@@ -18,7 +18,11 @@ import kotlinx.coroutines.withContext
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class HostKeyRejectedException : CancellationException("主机密钥未接受")
@@ -115,6 +119,12 @@ class SshShellSession(
     private var output: OutputStream? = null
     private val closed = AtomicBoolean(false)
     private val confirmHostKeyRef = AtomicReference(confirmHostKey)
+    // WINCH 防抖：键盘动画每帧一次 resize，压成一次发送（见 resize）
+    private val pendingSize = AtomicReference<Pair<Int, Int>?>(null)
+    private val lastSentSize = AtomicReference<Pair<Int, Int>?>(null)
+    private val resizeGeneration = AtomicInteger(0)
+    private val resizeExecutor: ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "lumin-winch").apply { isDaemon = true } }
 
     private fun text(id: Int, vararg args: Any): String = resolveText(id, args)
 
@@ -239,9 +249,39 @@ class SshShellSession(
         out.flush()
     }
 
-    /** 远程 WINCH 关闭（连上后 setPtySize 会断会话）；保留方法供 onResize 调用。 */
+    /**
+     * 远程 WINCH。必须发：本地 resize 后不通知远端，nano 等用备用屏幕（无回滚区）的程序
+     * 收不到重画信号，内容就真丢了。
+     *
+     * ponytail: setPtySize 是网络 I/O，绝不能在调用方（布局主线程）上同步做，
+     * 否则 NetworkOnMainThreadException 会炸穿并带走连接——这大概就是原「一调就断」的成因。
+     * 故内部自带单线程 + 防抖：键盘动画每帧一次 resize 会被压成一次发送。
+     * 限制：防抖窗口内只保留最后一次尺寸；失败仅记日志不重试（下次 resize 自然覆盖）。
+     * 防抖 + 网络往返期间本地已按新行列重排、远端尚未重画，全屏程序会闪一下（无法完全消除）。
+     */
     fun resize(columns: Int, rows: Int) {
-        // no-op：本地行列由 TermuxTerminalSurface 自行处理
+        if (columns < 20 || rows < 5 || closed.get()) return
+        pendingSize.set(columns to rows)
+        val generation = resizeGeneration.incrementAndGet()
+        resizeExecutor.schedule(
+            {
+                // 窗口内又来了新尺寸：让最后那次去发
+                if (generation != resizeGeneration.get()) return@schedule
+                val (cols, rws) = pendingSize.get() ?: return@schedule
+                val ch = channel
+                if (closed.get() || ch?.isConnected != true) return@schedule
+                // 尺寸没变就不打扰远端（如键盘弹出又收起，回到原值）
+                val size = cols to rws
+                if (lastSentSize.getAndSet(size) == size) return@schedule
+                runCatching { ch.setPtySize(cols, rws, cols * 8, rws * 16) }
+                    .onSuccess { AppLog.d("SSH", "WINCH ${cols}x$rws") }
+                    .onFailure { AppLog.w("SSH", "WINCH ${cols}x$rws failed: ${it.javaClass.simpleName}: ${it.message}") }
+            },
+            // 本地已在 TermuxTerminalSurface 压过一轮动画，这里只兜住偶发连续调用，
+            // 不能再叠长延迟——否则白白拉长「本地已重排、远端未重画」的花屏窗口
+            30,
+            TimeUnit.MILLISECONDS,
+        )
     }
 
     override fun close() {
@@ -251,6 +291,7 @@ class SshShellSession(
         onStatus = {}
         resolveText = { _, _ -> "" }
         confirmHostKeyRef.set { HostKeyAction.Cancel }
+        runCatching { resizeExecutor.shutdownNow() }
         runCatching { channel?.disconnect() }
         runCatching { session?.disconnect() }
     }
