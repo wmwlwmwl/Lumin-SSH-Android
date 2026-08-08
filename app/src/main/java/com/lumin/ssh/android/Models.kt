@@ -392,7 +392,7 @@ fun syncSnapshotFromJson(root: JSONObject): SyncSnapshot {
         proxyNodes = if (proxyNodeArray == null) emptyList() else List(proxyNodeArray.length()) { proxyNodeArray.getJSONObject(it).toProxyNode() },
         quickCommands = root.optString("quick_commands"),
         aiProvidersRaw = root.optJSONArray("ai_providers")?.toString() ?: "",
-        aiGlobalSettingsRaw = root.optJSONObject("ai_global_settings")?.toString() ?: "",
+        aiGlobalSettingsRaw = "", // ponytail: ai_global_settings 不再同步, 保留本地设置
         deletedConnections = tombstonesFromJsonArray(root.optJSONArray("deleted_connections")),
         deletedCredentials = tombstonesFromJsonArray(root.optJSONArray("deleted_credentials")),
         tombstonePrunedBefore = root.optLong("tombstone_pruned_before", 0),
@@ -570,7 +570,8 @@ fun desktopSnapshotJson(
     put("proxy_nodes", JSONArray().apply { proxyNodes.forEach { put(it.toJson()) } })
     put("quick_commands", quickCommands)
     if (aiProvidersRaw.isNotBlank()) put("ai_providers", JSONArray(aiProvidersRaw))
-    if (aiGlobalSettingsRaw.isNotBlank()) put("ai_global_settings", JSONObject(aiGlobalSettingsRaw))
+    // ponytail: ai_global_settings 不再同步
+    // if (aiGlobalSettingsRaw.isNotBlank()) put("ai_global_settings", JSONObject(aiGlobalSettingsRaw))
     // 始终写出字段，避免旧客户端/对端用「字段缺失」当无墓碑语义；空数组表示明确无删除记录
     put("deleted_connections", tombstonesToJsonArray(deletedConnections))
     put("deleted_credentials", tombstonesToJsonArray(deletedCredentials))
