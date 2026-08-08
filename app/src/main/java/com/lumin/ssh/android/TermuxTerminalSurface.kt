@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -60,6 +61,28 @@ class TermuxTerminalSurface(context: Context) : View(context) {
     private val pending = ArrayList<ByteArray>()
     /** 待应用的行列：键盘动画期间只记不重排，见 onSizeChanged */
     private var pendingResize: Pair<Int, Int>? = null
+    /** WINCH 后全屏程序会先清屏再分批重画；短暂抑制中间帧，只显示完成后的帧。 */
+    private var resizeRedrawPending = false
+    /** 抑制重画时保留的上一帧；不能只 return，否则 View 会先被系统清成背景色。 */
+    private var resizeSnapshot: Bitmap? = null
+    private var resizeStartedAtMs = 0L
+    private var resizeOutputBytes = 0
+    private var resizeOutputChunks = 0
+    private fun releaseResize(reason: String) {
+        val elapsed = if (resizeStartedAtMs == 0L) 0L else System.currentTimeMillis() - resizeStartedAtMs
+        AppLog.d("Term", "resize redraw release reason=$reason elapsed=${elapsed}ms outputBytes=$resizeOutputBytes chunks=$resizeOutputChunks")
+        resizeRedrawPending = false
+        resizeSnapshot?.recycle()
+        resizeSnapshot = null
+        resizeStartedAtMs = 0L
+        resizeOutputBytes = 0
+        resizeOutputChunks = 0
+        removeCallbacks(drawAfterResize)
+        removeCallbacks(forceResizeRelease)
+        invalidate()
+    }
+    private val drawAfterResize = Runnable { releaseResize("quiet") }
+    private val forceResizeRelease = Runnable { releaseResize("timeout") }
     private val applyResize = Runnable {
         val target = pendingResize
         pendingResize = null
@@ -67,10 +90,29 @@ class TermuxTerminalSurface(context: Context) : View(context) {
         if (target != null && current != null) {
             val (columns, rows) = target
             if (current.mColumns != columns || current.mRows != rows) {
+                // 先把当前完整画面保存下来。仅在 onDraw 里 return 会留下系统清屏后的黑帧，
+                // 所以看起来仍会闪；保存上一帧才能真正做到无缝替换。
+                if (width > 0 && height > 0) {
+                    resizeSnapshot?.recycle()
+                    val snapshot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    resizeSnapshot = snapshot
+                    val snapshotCanvas = Canvas(snapshot)
+                    snapshotCanvas.drawColor(surfaceBackgroundColor)
+                    renderer.render(current, snapshotCanvas, topRow, -1, -1, -1, -1)
+                }
+                resizeRedrawPending = true
+                resizeStartedAtMs = System.currentTimeMillis()
+                resizeOutputBytes = 0
+                resizeOutputChunks = 0
+                AppLog.d("Term", "resize redraw hold ${current.mColumns}x${current.mRows}->${columns}x$rows")
+                removeCallbacks(drawAfterResize)
+                removeCallbacks(forceResizeRelease)
+                // 远端 WINCH 由 SSH 层异步发送，网络/线程调度可能晚于本地 resize；
+                // 初始阶段不能按“无输出”立即释放，否则会在 WINCH 到达前闪回旧图。
+                postDelayed(drawAfterResize, 600)
+                postDelayed(forceResizeRelease, 1200)
                 current.resize(columns, rows, renderer.fontWidth.toInt(), renderer.fontLineSpacing)
-                // 本地重排与远程 WINCH 同时发生，把花屏窗口压到一次网络往返
                 onResize(columns, rows)
-                invalidate()
             }
         }
     }
@@ -131,7 +173,11 @@ class TermuxTerminalSurface(context: Context) : View(context) {
     fun setFontSize(fontSize: Int) {
         val level = fontSize.coerceIn(1, 30)
         val density = resources.displayMetrics.density.coerceAtLeast(1f)
-        textSizePx = (level * density).toInt().coerceIn(1, 96)
+        val nextSizePx = (level * density).toInt().coerceIn(1, 96)
+        // AndroidView 的 update 每次重组都会调这里（终端一有输出就重组）。字号没变还往下走，
+        // 会撤掉 onSizeChanged 的防抖并按动画中途的 height 立即重排 —— 键盘动画期间画面因此抖。
+        if (nextSizePx == textSizePx && emulator != null) return
+        textSizePx = nextSizePx
         renderer = TerminalRenderer(textSizePx, Typeface.MONOSPACE)
         val current = emulator
         if (current == null) {
@@ -156,11 +202,22 @@ class TermuxTerminalSurface(context: Context) : View(context) {
             return
         }
         current.append(data, data.size)
+        if (resizeRedrawPending) {
+            resizeOutputBytes += data.size
+            resizeOutputChunks++
+        }
         // 选文本对话框打开时不要强制滚到最新，避免用户在对话框里滑不动
         if (!selectTextDialogOpen) {
             topRow = 0
         }
-        postInvalidate()
+        if (resizeRedrawPending) {
+            // 初始等待 600ms；之后每批输出后再等 150ms。
+            // 600ms 覆盖 SSH WINCH 异步发送的延迟，避免远端尚未收到 WINCH 就提前显示旧缓冲区。
+            removeCallbacks(drawAfterResize)
+            postDelayed(drawAfterResize, 150)
+        } else {
+            postInvalidate()
+        }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -192,11 +249,20 @@ class TermuxTerminalSurface(context: Context) : View(context) {
 
     override fun onDetachedFromWindow() {
         removeCallbacks(applyResize)
+        removeCallbacks(drawAfterResize)
+        removeCallbacks(forceResizeRelease)
         pendingResize = null
+        resizeRedrawPending = false
+        resizeSnapshot?.recycle()
+        resizeSnapshot = null
         super.onDetachedFromWindow()
     }
 
     override fun onDraw(canvas: Canvas) {
+        if (resizeRedrawPending) {
+            resizeSnapshot?.let { canvas.drawBitmap(it, 0f, 0f, null) }
+            return
+        }
         canvas.drawColor(surfaceBackgroundColor)
         val current = emulator ?: return
         renderer.render(current, canvas, topRow, -1, -1, -1, -1)

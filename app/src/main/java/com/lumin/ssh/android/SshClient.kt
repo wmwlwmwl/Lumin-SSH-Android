@@ -24,6 +24,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 class HostKeyRejectedException : CancellationException("主机密钥未接受")
 
@@ -106,6 +108,12 @@ private fun sshSha256Fingerprint(key: ByteArray): String {
     return "SHA256:" + Base64.encodeToString(hash, Base64.NO_WRAP).trimEnd('=')
 }
 
+internal class SerializedShellIo {
+    private val lock = ReentrantLock()
+
+    fun <T> withLock(block: () -> T): T = lock.withLock(block)
+}
+
 class SshShellSession(
     private val store: LocalStore,
     private val conn: Connection,
@@ -118,6 +126,8 @@ class SshShellSession(
     private var channel: ChannelShell? = null
     private var output: OutputStream? = null
     private val closed = AtomicBoolean(false)
+    private val io = SerializedShellIo()
+    private val sendSequence = AtomicInteger(0)
     private val confirmHostKeyRef = AtomicReference(confirmHostKey)
     // WINCH 防抖：键盘动画每帧一次 resize，压成一次发送（见 resize）
     private val pendingSize = AtomicReference<Pair<Int, Int>?>(null)
@@ -167,9 +177,11 @@ class SshShellSession(
             // 握手超时；连上后必须清零，否则 SO_TIMEOUT 会杀读线程
             timeout = 15000
         }
-        session = nextSession
+        io.withLock {
+            if (closed.get()) throw CancellationException(text(R.string.ssh_connection_cancelled))
+            session = nextSession
+        }
         onStatus(text(R.string.ssh_connecting_socket))
-        if (closed.get()) throw CancellationException(text(R.string.ssh_connection_cancelled))
         val tSock = System.currentTimeMillis()
         runCatching { nextSession.connect(15000) }
             .getOrElse {
@@ -209,15 +221,17 @@ class SshShellSession(
         nextChannel.connect(15000)
         AppLog.i("SSH", "shell ready in ${System.currentTimeMillis() - tShell}ms (total ${elapsed()}ms), start reader")
 
-        // close() 可能在 NonCancellable 连接途中先跑完：不得再挂上新 channel/reader
-        if (closed.get()) {
-            runCatching { nextChannel.disconnect() }
-            runCatching { nextSession.disconnect() }
-            throw CancellationException(text(R.string.ssh_connection_cancelled))
+        io.withLock {
+            // close() 可能在 NonCancellable 连接途中先跑完：不得再挂上新 channel/reader
+            if (closed.get()) {
+                runCatching { nextChannel.disconnect() }
+                runCatching { nextSession.disconnect() }
+                throw CancellationException(text(R.string.ssh_connection_cancelled))
+            }
+            session = nextSession
+            channel = nextChannel
+            output = nextOutput
         }
-        session = nextSession
-        channel = nextChannel
-        output = nextOutput
         onStatus(text(R.string.ssh_waiting_output))
         startReader(nextInput)
     }
@@ -239,14 +253,25 @@ class SshShellSession(
     val isConnected: Boolean get() = !closed.get() && channel?.isConnected == true
 
     suspend fun sendRaw(text: String) = withContext(Dispatchers.IO) {
-        val out = output
-        if (out == null) {
-            AppLog.w("SSH", "sendRaw while output=null len=${text.length} closed=${closed.get()} ch=${channel?.isConnected}")
-            throw IllegalStateException(text(R.string.ssh_not_connected))
+        io.withLock {
+            if (closed.get()) throw IllegalStateException(this@SshShellSession.text(R.string.ssh_not_connected))
+            val out = output
+            if (out == null || channel?.isConnected != true) {
+                AppLog.w("SSH", "sendRaw unavailable len=${text.length} closed=${closed.get()} ch=${channel?.isConnected}")
+                throw IllegalStateException(this@SshShellSession.text(R.string.ssh_not_connected))
+            }
+            val bytes = text.toByteArray()
+            val sequence = sendSequence.incrementAndGet()
+            AppLog.d("SSH", "send begin seq=$sequence len=${bytes.size}")
+            try {
+                out.write(bytes)
+                out.flush()
+                AppLog.d("SSH", "send done seq=$sequence len=${bytes.size}")
+            } catch (error: Exception) {
+                AppLog.e("SSH", "send failed seq=$sequence len=${bytes.size}", error)
+                throw error
+            }
         }
-        val bytes = text.toByteArray()
-        out.write(bytes)
-        out.flush()
     }
 
     /**
@@ -273,12 +298,15 @@ class SshShellSession(
                 // 尺寸没变就不打扰远端（如键盘弹出又收起，回到原值）
                 val size = cols to rws
                 if (lastSentSize.getAndSet(size) == size) return@schedule
-                runCatching { ch.setPtySize(cols, rws, cols * 8, rws * 16) }
-                    .onSuccess { AppLog.d("SSH", "WINCH ${cols}x$rws") }
-                    .onFailure { AppLog.w("SSH", "WINCH ${cols}x$rws failed: ${it.javaClass.simpleName}: ${it.message}") }
+                io.withLock {
+                    if (closed.get() || ch.isConnected != true) return@withLock
+                    runCatching { ch.setPtySize(cols, rws, cols * 8, rws * 16) }
+                        .onSuccess { AppLog.d("SSH", "WINCH ${cols}x$rws") }
+                        .onFailure { AppLog.w("SSH", "WINCH ${cols}x$rws failed: ${it.javaClass.simpleName}: ${it.message}") }
+                }
             },
-            // 本地已在 TermuxTerminalSurface 压过一轮动画，这里只兜住偶发连续调用，
-            // 不能再叠长延迟——否则白白拉长「本地已重排、远端未重画」的花屏窗口
+            // 本地已在 TermuxTerminalSurface 压过一轮动画，这里只兜住偶发连续调用。
+            // 延迟不能太长：本地快照已经开始，WINCH 越晚，旧画面停留越久，反而像闪回。
             30,
             TimeUnit.MILLISECONDS,
         )
@@ -292,8 +320,13 @@ class SshShellSession(
         resolveText = { _, _ -> "" }
         confirmHostKeyRef.set { HostKeyAction.Cancel }
         runCatching { resizeExecutor.shutdownNow() }
-        runCatching { channel?.disconnect() }
-        runCatching { session?.disconnect() }
+        io.withLock {
+            output = null
+            runCatching { channel?.disconnect() }
+            runCatching { session?.disconnect() }
+            channel = null
+            session = null
+        }
     }
 
     private fun resolveProxy(): Proxy? {
