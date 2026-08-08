@@ -14,6 +14,19 @@
 
 ---
 
+## [0.1.6] - 2026-08-09
+
+### 修复
+
+- SSH shell 会话连接、关闭、写入操作统一串行化，避免连接竞态、关闭后重新挂载 channel / reader，以及并发写入交叉
+- 同步时透传 PC 独有连接字段，避免覆盖终端编码等配置
+
+### 变更
+
+- 移除 `ai_global_settings` 同步，避免多端设置冲突
+
+---
+
 ## [0.1.5] - 2026-08-01
 
 ### 新增
@@ -115,7 +128,8 @@
 
 ---
 
-[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.5...HEAD
+[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.6...HEAD
+[0.1.6]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.6
 [0.1.5]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.5
 [0.1.4]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.4
 [0.1.3]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.3
