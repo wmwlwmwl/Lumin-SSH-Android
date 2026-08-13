@@ -46,16 +46,30 @@ data class HostKeyConfirm(
 )
 
 internal class PasswordUserInfo(private val password: String) : UserInfo, UIKeyboardInteractive {
+    private val passwordTried = AtomicBoolean(false)
+    private val promptCount = AtomicInteger(0)
+    private val getCount = AtomicInteger(0)
     override fun getPassphrase(): String? = null
-    override fun getPassword(): String = password
-    override fun promptPassword(message: String?): Boolean = true
+    override fun getPassword(): String {
+        AppLog.i("SSH", "UserInfo.getPassword #${getCount.incrementAndGet()}")
+        return password
+    }
+    override fun promptPassword(message: String?): Boolean {
+        val n = promptCount.incrementAndGet()
+        val result = passwordTried.compareAndSet(false, true)
+        AppLog.i("SSH", "UserInfo.promptPassword #$n result=$result tried=${passwordTried.get()}")
+        return result
+    }
     override fun promptPassphrase(message: String?): Boolean = false
-    override fun promptYesNo(message: String?): Boolean = true
+    override fun promptYesNo(message: String?): Boolean = false
     override fun showMessage(message: String?) {}
     override fun promptKeyboardInteractive(
         destination: String?, name: String?, instruction: String?,
         prompt: Array<out String>?, echo: BooleanArray?,
-    ): Array<String> = Array(prompt?.size ?: 1) { password }
+    ): Array<String> {
+        AppLog.i("SSH", "UserInfo.promptKeyboardInteractive called")
+        return Array(prompt?.size ?: 1) { password }
+    }
 }
 
 internal class LocalHostKeyRepository(
@@ -168,12 +182,11 @@ class SshShellSession(
         val nextSession = jsch.getSession(conn.username, conn.host, conn.port).apply {
             resolveProxy()?.let { setProxy(it) }
             if (conn.authMethod != "privateKey") {
-                setPassword(conn.password)
                 setUserInfo(PasswordUserInfo(conn.password))
             }
             setConfig("StrictHostKeyChecking", "yes")
             setConfig("server_host_key", hostKeyAlgorithmsForConnection(conn.allowLegacySshRsa))
-            setConfig("PreferredAuthentications", if (conn.authMethod == "privateKey") "publickey" else "keyboard-interactive,password")
+            setConfig("PreferredAuthentications", if (conn.authMethod == "privateKey") "publickey" else "password")
             // 握手超时；连上后必须清零，否则 SO_TIMEOUT 会杀读线程
             timeout = 15000
         }
@@ -190,7 +203,7 @@ class SshShellSession(
                     throw HostKeyRejectedException()
                 }
                 val message = it.message.orEmpty()
-                if (message.contains("Auth fail", ignoreCase = true)) {
+                if (message.contains("Auth fail", ignoreCase = true) || message.contains("Auth cancel", ignoreCase = true)) {
                     throw IllegalStateException(text(R.string.ssh_authentication_error, message), it)
                 } else {
                     throw IllegalStateException(text(R.string.ssh_connection_error, message.ifBlank { it.javaClass.simpleName }), it)

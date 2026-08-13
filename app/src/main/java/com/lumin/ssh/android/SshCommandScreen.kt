@@ -55,8 +55,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: String?, quickCommandsRaw: String, onBack: () -> Unit, onManageQuickCommands: () -> Unit = {}, onFontSizeChanged: (Int) -> Unit = {}) {
+fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: String?, quickCommandsRaw: String, onBack: () -> Unit, onManageQuickCommands: () -> Unit = {}, onFontSizeChanged: (Int) -> Unit = {}, onConnectionReady: (Connection, Boolean) -> Unit = { _, _ -> }) {
     var sshConn by remember(conn.id) { mutableStateOf(conn) }
+    var pendingRememberPassword by remember(conn.id) { mutableStateOf(false) }
     var retryNonce by remember(conn.id) { mutableStateOf(0) }
     var command by remember { mutableStateOf("") }
     var showInputBar by remember { mutableStateOf(store.loadShowInputBar()) }
@@ -288,11 +289,7 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 } else {
                     handled = true
                     sshConn = conn.copy(password = password, authMethod = "password")
-                    if (rememberPassword.isChecked) {
-                        store.saveConnections(store.loadConnections().map {
-                            if (it.id == conn.id) it.copy(password = password, authMethod = "password", lastModified = System.currentTimeMillis()) else it
-                        })
-                    }
+                    pendingRememberPassword = rememberPassword.isChecked
                     shell = null
                     shellReady = false
                     connecting = false
@@ -616,6 +613,8 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 shell = nextShell
                 stateRef.shell = nextShell
                 shellReady = true
+                onConnectionReady(sshConn, pendingRememberPassword)
+                pendingRememberPassword = false
                 AppLog.i(
                     "Term",
                     "shellReady=true terminal=${stateRef.terminal != null} historyBytes=${outputHistoryBytes()}",
@@ -632,6 +631,8 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                 shell = nextShell
                 stateRef.shell = nextShell
                 shellReady = true
+                onConnectionReady(sshConn, pendingRememberPassword)
+                pendingRememberPassword = false
             } else {
                 AppLog.e("Term", "connect failed", it)
                 if (!detachedToBackground) nextShell.close()
@@ -647,6 +648,7 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                     val errorText = context.userErrorText(it)
                     val isAuthFailure = sshConn.authMethod == "password" && (
                         rawErrorText.contains("Auth fail", ignoreCase = true) ||
+                            rawErrorText.contains("Auth cancel", ignoreCase = true) ||
                             rawErrorText.contains("认证失败")
                         )
                     if (isAuthFailure) {

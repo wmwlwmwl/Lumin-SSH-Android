@@ -520,6 +520,34 @@ fun LuminLiteApp(
             },
             onManageQuickCommands = { navigateTo(AppScreen.QuickCommands) },
             onFontSizeChanged = { size: Int -> terminalFontSize = size },
+            onConnectionReady = { connected, rememberPassword ->
+                if (rememberPassword) {
+                    if (connected.credentialId.isNotBlank()) {
+                        credentials = store.loadCredentials().map {
+                            if (it.id == connected.credentialId) {
+                                it.copy(
+                                    password = connected.password,
+                                    authMethod = "password",
+                                    lastModified = System.currentTimeMillis(),
+                                )
+                            } else it
+                        }
+                        store.saveCredentials(credentials)
+                    } else {
+                        connections = store.loadConnections().map {
+                            if (it.id == connected.id) {
+                                it.copy(
+                                    password = connected.password,
+                                    authMethod = "password",
+                                    lastModified = System.currentTimeMillis(),
+                                )
+                            } else it
+                        }
+                        store.saveConnections(connections)
+                    }
+                    triggerAutoSync()
+                }
+            },
         )
     }
 
