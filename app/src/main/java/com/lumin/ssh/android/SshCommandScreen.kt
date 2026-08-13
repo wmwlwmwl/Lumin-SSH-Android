@@ -735,6 +735,7 @@ fun SshCommandScreen(store: LocalStore, conn: Connection, requestedSessionId: St
                         cursor = terminalCursorArgb,
                     )
                     view.sessionHost = conn.host
+                    view.isSessionReady = shellReady
                     view.onResize = { columns, rows -> resizePtyOnce(columns, rows) }
                     view.onInput = { text -> safeSend(text) }
                     view.onTap = { showKeyboardFromTerminal() }

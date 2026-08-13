@@ -45,6 +45,7 @@ class TermuxTerminalSurface(context: Context) : View(context) {
     var onTap: () -> Unit = {}
     var onSaveTranscript: (String, String) -> Unit = { _, _ -> }
     var sessionHost: String = "terminal"
+    var isSessionReady: Boolean = false
     private var emulator: TerminalEmulator? = null
     private var topRow = 0
     private var lastY = 0f
@@ -401,6 +402,7 @@ class TermuxTerminalSurface(context: Context) : View(context) {
     }
 
     override fun performLongClick(): Boolean {
+        if (!isSessionReady) return false
         super.performLongClick()
         val clipboard = context.getSystemService(ClipboardManager::class.java)
         val items = intArrayOf(
