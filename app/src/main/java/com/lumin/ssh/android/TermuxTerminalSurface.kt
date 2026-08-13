@@ -481,7 +481,6 @@ class TermuxTerminalSurface(context: Context) : View(context) {
             setTextIsSelectable(true)
             typeface = Typeface.MONOSPACE
             setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, dialogTextPx)
-            setTextColor(defaultForegroundColor)
             setBackgroundColor(Color.TRANSPARENT)
             setPadding(padH, padTop, padH, padBottom)
             isVerticalScrollBarEnabled = false
