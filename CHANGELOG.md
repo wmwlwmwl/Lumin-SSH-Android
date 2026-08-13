@@ -14,6 +14,20 @@
 
 ---
 
+## [0.1.7] - 2026-08-14
+
+### 修复
+
+- 修复 SSH 密码重试时同步状态未正确更新的问题
+- 修复服务器别名为空时的显示与同步
+- 复制会话对话框文字颜色适配当前主题
+
+### 变更
+
+- 终端菜单仅在 SSH 连接成功后显示，避免未连接时误操作
+
+---
+
 ## [0.1.6] - 2026-08-09
 
 ### 修复
@@ -128,7 +142,8 @@
 
 ---
 
-[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.6...HEAD
+[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.7...HEAD
+[0.1.7]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.7
 [0.1.6]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.6
 [0.1.5]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.5
 [0.1.4]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.4
