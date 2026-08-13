@@ -924,7 +924,7 @@ fun LuminLiteApp(
                     connections.map { if (it.id == conn.id) conn else it }
                 }.sortedBy { it.name.lowercase() }
                 store.saveConnections(connections)
-                message = context.getString(R.string.saved_server, conn.name)
+                message = context.getString(R.string.saved_server, conn.name.ifBlank { conn.host })
                 triggerAutoSync()
                 navigateHome()
             },
@@ -964,14 +964,14 @@ fun LuminLiteApp(
     pendingDeleteConnection?.let { conn ->
         ConfirmDialog(
             title = stringResource(R.string.delete_server_title),
-            text = stringResource(R.string.delete_server_message, conn.name),
+            text = stringResource(R.string.delete_server_message, conn.name.ifBlank { conn.host }),
             onCancel = { pendingDeleteConnection = null },
             onConfirm = {
                 connections = connections.filterNot { it.id == conn.id }
                 store.saveConnections(connections)
                 store.addConnectionTombstones(listOf(conn.id))
                 pendingDeleteConnection = null
-                message = context.getString(R.string.deleted_server, conn.name)
+                message = context.getString(R.string.deleted_server, conn.name.ifBlank { conn.host })
                 triggerAutoSync()
             },
         )

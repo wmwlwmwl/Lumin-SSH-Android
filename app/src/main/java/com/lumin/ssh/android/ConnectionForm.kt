@@ -79,7 +79,7 @@ fun ConnectionForm(
         onSave(
             Connection(
                 id = initial?.id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
-                name = name.ifBlank { host },
+                name = name,
                 host = host,
                 port = port.toIntOrNull() ?: 22,
                 username = username,

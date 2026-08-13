@@ -57,7 +57,7 @@ fun CompactConnectionRow(
             LuminDot(LuminColors.Accent)
             Spacer(Modifier.size(10.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(conn.name, style = MaterialTheme.typography.titleMedium, color = LuminColors.TextPrimary)
+                Text(conn.name.ifBlank { conn.host }, style = MaterialTheme.typography.titleMedium, color = LuminColors.TextPrimary)
                 Text(
                     if (hideSensitive) "•••@•••:•••" else "${conn.username}@${conn.host}:${conn.port}",
                     style = MaterialTheme.typography.bodySmall,
@@ -94,7 +94,7 @@ fun ConnectionCard(
 ) {
     LuminCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(conn.name, style = MaterialTheme.typography.titleLarge, color = LuminColors.TextPrimary)
+            Text(conn.name.ifBlank { conn.host }, style = MaterialTheme.typography.titleLarge, color = LuminColors.TextPrimary)
             Text("${conn.username}@${conn.host}:${conn.port}", color = LuminColors.Accent)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                 LuminPrimaryButton(onClick = onConnect) { Text(stringResource(R.string.connect)) }
