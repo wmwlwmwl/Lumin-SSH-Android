@@ -47,6 +47,7 @@ data class HostKeyConfirm(
 
 internal class PasswordUserInfo(private val password: String) : UserInfo, UIKeyboardInteractive {
     private val passwordTried = AtomicBoolean(false)
+    private val interactiveTried = AtomicBoolean(false)
     private val promptCount = AtomicInteger(0)
     private val getCount = AtomicInteger(0)
     override fun getPassphrase(): String? = null
@@ -66,9 +67,12 @@ internal class PasswordUserInfo(private val password: String) : UserInfo, UIKeyb
     override fun promptKeyboardInteractive(
         destination: String?, name: String?, instruction: String?,
         prompt: Array<out String>?, echo: BooleanArray?,
-    ): Array<String> {
-        AppLog.i("SSH", "UserInfo.promptKeyboardInteractive called")
-        return Array(prompt?.size ?: 1) { password }
+    ): Array<String>? {
+        AppLog.i("SSH", "UserInfo.promptKeyboardInteractive called, size=${prompt?.size}")
+        // 通道各自独立一次性令牌：交互通道失败后返回 null 触发 Auth cancel，避免无限重试
+        return if (interactiveTried.compareAndSet(false, true)) {
+            Array(prompt?.size ?: 1) { password }
+        } else null
     }
 }
 
@@ -186,7 +190,7 @@ class SshShellSession(
             }
             setConfig("StrictHostKeyChecking", "yes")
             setConfig("server_host_key", hostKeyAlgorithmsForConnection(conn.allowLegacySshRsa))
-            setConfig("PreferredAuthentications", if (conn.authMethod == "privateKey") "publickey" else "password")
+            setConfig("PreferredAuthentications", if (conn.authMethod == "privateKey") "publickey" else "keyboard-interactive,password")
             // 握手超时；连上后必须清零，否则 SO_TIMEOUT 会杀读线程
             timeout = 15000
         }
