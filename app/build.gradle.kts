@@ -133,5 +133,5 @@ dependencies {
     implementation("com.github.Termux.Termux-app:terminal-view:v0.119.0-beta.3")
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.4")
     testImplementation(kotlin("test"))
-    testImplementation("org.json:json:20240303")
+    testImplementation("org.json:json:20260814")
 }
