@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # Gradle 依赖（AGP/Kotlin/SSH 库等，版本需配套，限制 PR 数量避免刷屏）
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
