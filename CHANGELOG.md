@@ -14,6 +14,24 @@
 
 ---
 
+## [0.1.8] - 2026-08-22
+
+### 修复
+
+- 恢复 SSH 次级 `keyboard-interactive` 认证回退，并为交互式认证与密码认证使用独立的一次性令牌，避免不兼容及密码错误时无限重试
+
+### 依赖
+
+- 升级 Reorderable Android 至 3.1.0、Gradle Wrapper 至 9.7.0、JSON-java 至 20260814
+- 启用 Dependabot 自动依赖更新
+
+### 工程
+
+- GitHub Actions 升级至 Node 24 兼容版本
+- 增加 CodeQL 安全扫描与 CodeRabbit 审查配置
+
+---
+
 ## [0.1.7] - 2026-08-14
 
 ### 修复
@@ -142,7 +160,8 @@
 
 ---
 
-[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.7...HEAD
+[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.8...HEAD
+[0.1.8]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.8
 [0.1.7]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.7
 [0.1.6]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.6
 [0.1.5]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.5
