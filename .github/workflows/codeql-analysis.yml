@@ -1,0 +1,43 @@
+# CodeQL 安全扫描：在 push/PR 上自动分析代码中的注入、敏感信息、
+# 危险调用等安全漏洞。免费（公开仓库无限量，私有仓库在 Actions 免费配额内）。
+# 与 CodeRabbit（PR 常规审查）互补。
+
+name: "CodeQL"
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: '42 2 * * 1'   # 每周一 02:42 定时全量扫描
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write   # 上传 SARIF 结果到安全告警
+      packages: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['java-kotlin']   # Kotlin/Java + Gradle
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

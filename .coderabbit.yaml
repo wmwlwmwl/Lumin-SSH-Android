@@ -1,0 +1,19 @@
+# CodeRabbit AI 代码审查配置
+# 与 CodeQL（安全硬扫描）互补：CodeRabbit 负责常规逻辑/风格审查。
+# 注意：CodeRabbit 官方只认仓库根目录的 .coderabbit.yaml，放 .github/ 下不生效。
+
+language: zh-CN            # 审查评论用中文
+
+reviews:
+  request_changes_workflow: false   # 只给建议，不强制要求修改（走 PR review 流程时尤其有用）
+  profile: assertive                # 建议强度：assertive 更直接地指出问题
+  auto_review:
+    enabled: true
+    drafts: false                   # 不审查 draft 状态的 PR
+    base: main
+
+chat:
+  auto_reply: true         # 在 PR 里 @coderabbitai 可对话追问
+
+summarize:
+  auto_summary_insights: true   # 生成 PR 洞察总结
