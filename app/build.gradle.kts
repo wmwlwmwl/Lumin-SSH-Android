@@ -128,7 +128,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.github.mwiede:jsch:0.2.20")
-    implementation("commons-net:commons-net:3.11.1")
+    implementation("commons-net:commons-net:3.13.0")
     implementation("com.github.Termux.Termux-app:terminal-emulator:v0.119.0-beta.3")
     implementation("com.github.Termux.Termux-app:terminal-view:v0.119.0-beta.3")
     debugImplementation("androidx.compose.ui:ui-tooling:1.7.4")
