@@ -21,6 +21,9 @@ data class Connection(
     val fileManagerInitPath: String = "",
     val terminalEncoding: String = "",
     val allowLegacySshRsa: Boolean = false,
+    // 安卓不使用该字段，仅透传保存：PC 端「自动重连」开关（autoReconnect）在同步回写
+    // 时同样可能把 PC 配置整条覆盖，透传回来避免被静默抹掉（同 allowLegacySshRsa）
+    val autoReconnect: Boolean = false,
     val proxyMode: String = "",
     val proxyNodeId: String = "",
     val proxyType: String = "socks5",
@@ -147,6 +150,7 @@ fun Connection.toJson() = JSONObject().apply {
     if (n.fileManagerInitPath.isNotEmpty()) put("fileManagerInitPath", n.fileManagerInitPath)
     put("terminalEncoding", n.terminalEncoding)
     if (n.allowLegacySshRsa) put("allowLegacySshRsa", true)
+    if (n.autoReconnect) put("autoReconnect", true)
     if (n.proxyMode.isNotEmpty()) put("proxyMode", n.proxyMode)
     if (n.proxyNodeId.isNotEmpty()) put("proxyNodeId", n.proxyNodeId)
     if (n.proxyType.isNotEmpty()) put("proxyType", n.proxyType)
@@ -174,6 +178,7 @@ fun JSONObject.toConnection() = Connection(
     fileManagerInitPath = optString("fileManagerInitPath"),
     terminalEncoding = optString("terminalEncoding"),
     allowLegacySshRsa = optBoolean("allowLegacySshRsa", false),
+    autoReconnect = optBoolean("autoReconnect", false),
     proxyMode = optString("proxyMode"),
     proxyNodeId = optString("proxyNodeId"),
     // 缺省不填 socks5：由 normalizedForSync 在 direct 时清掉
