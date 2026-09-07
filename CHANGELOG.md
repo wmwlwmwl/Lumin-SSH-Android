@@ -14,6 +14,22 @@
 
 ---
 
+## [0.1.9] - 2026-09-08
+
+### 修复
+
+- 同步时透传 PC 端 `autoReconnect` 字段，避免安卓同步回写抹掉自动重连开关
+
+### 依赖
+
+- 升级 commons-net 至 3.13.0
+
+### 工程
+
+- CodeQL 操作版本升级至 v4
+
+---
+
 ## [0.1.8] - 2026-08-22
 
 ### 修复
@@ -160,7 +176,8 @@
 
 ---
 
-[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.8...HEAD
+[Unreleased]: https://github.com/wmwlwmwl/Lumin-SSH-Android/compare/android-v0.1.9...HEAD
+[0.1.9]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.9
 [0.1.8]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.8
 [0.1.7]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.7
 [0.1.6]: https://github.com/wmwlwmwl/Lumin-SSH-Android/releases/tag/android-v0.1.6
